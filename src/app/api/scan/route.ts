@@ -1,9 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scanStore } from "@/lib/scanner";
+import { verifySessionToken, COOKIE_NAME } from "@/lib/auth";
 
-export const maxDuration = 60; // Allow up to 60 seconds for the deep scan
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  // Defense-in-depth: verify session even though middleware should catch this
+  const sessionCookie = req.cookies.get(COOKIE_NAME);
+  if (!sessionCookie?.value || !verifySessionToken(sessionCookie.value)) {
+    return NextResponse.json(
+      { error: "Unauthorized. Please log in." },
+      { status: 401 }
+    );
+  }
+
   try {
     const body = await req.json();
     const { url } = body;
@@ -15,7 +25,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Basic URL validation
     const cleaned = url.trim();
     if (cleaned.length < 4 || cleaned.length > 500) {
       return NextResponse.json(
