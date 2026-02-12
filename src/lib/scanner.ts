@@ -609,6 +609,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     "klaviyo.com", "mailchimp.com", "omnisend.com",
     "w3.org", "schema.org", "gravatar.com",
     "hcaptcha.com", "recaptcha.net", "cloudflare.com", "cloudflareinsights.com",
+    "cookiesandyou.com",
     "gorgias.com", "tidio.com", "zendesk.com", "intercom.com", "freshdesk.com",
   ];
 
