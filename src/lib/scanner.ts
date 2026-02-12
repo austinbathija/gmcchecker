@@ -41,13 +41,6 @@ export interface StoreIntelligence {
   theme: string | null;
 }
 
-export interface ContactPresence {
-  email: { found: boolean; inFooter: boolean; inContactPage: boolean; inPolicies: boolean; value?: string };
-  phone: { found: boolean; inFooter: boolean; inContactPage: boolean; inPolicies: boolean; value?: string };
-  address: { found: boolean; inFooter: boolean; inContactPage: boolean; inPolicies: boolean; value?: string };
-  supportHours: { found: boolean; inFooter: boolean; inContactPage: boolean; inPolicies: boolean; value?: string };
-}
-
 export interface TargetedCopyItem {
   keyword: string;
   context: string;
@@ -72,6 +65,20 @@ export interface RefundPolicyDetails {
   restockingFees: string | null;
 }
 
+export interface ContactPageResult {
+  path: string;
+  url: string;
+  is404: boolean;
+}
+
+export interface PolicyContactCheck {
+  policyName: string;
+  policyUrl: string;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  hasAddress: boolean;
+}
+
 export interface ScanResult {
   url: string;
   scannedAt: string;
@@ -86,10 +93,11 @@ export interface ScanResult {
   wrongDomainLinks: WrongDomainLink[];
   emailMismatches: EmailMismatch[];
   collectionIssues: CollectionIssue[];
-  contactPresence: ContactPresence;
   targetedCopy: TargetedCopyItem[];
   shippingPolicyDetails: ShippingPolicyDetails | null;
   refundPolicyDetails: RefundPolicyDetails | null;
+  contactPage404s: ContactPageResult[];
+  policyContactChecks: PolicyContactCheck[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,7 +135,6 @@ async function fetchPage(url: string): Promise<{ ok: boolean; status: number; ht
 function extractEmails(html: string): string[] {
   const pattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const matches = html.match(pattern) || [];
-  // Filter out common false positives
   const filtered = matches.filter(
     (e) =>
       !e.endsWith(".png") &&
@@ -149,11 +156,18 @@ function extractPhones(html: string): string[] {
   return [...new Set(matches.map((p) => p.trim()).filter((p) => p.length >= 7 && p.length <= 20))];
 }
 
-function extractTextContent($: cheerio.CheerioAPI, selector?: string): string {
-  if (selector) {
-    return $(selector).text().replace(/\s+/g, " ").trim();
-  }
+/** Strip scripts/styles from HTML and return visible text */
+function getVisibleText(html: string): string {
+  const $ = cheerio.load(html);
+  $("script, style, noscript, svg, link, meta").remove();
   return $("body").text().replace(/\s+/g, " ").trim();
+}
+
+/** Get visible text from a specific element */
+function getFooterText($: cheerio.CheerioAPI): string {
+  const $footer = $("footer").clone();
+  $footer.find("script, style, noscript, svg").remove();
+  return $footer.text().replace(/\s+/g, " ").trim();
 }
 
 // ─── TARGETED COPY KEYWORDS ─────────────────────────────────────────────────
@@ -176,6 +190,18 @@ const TARGETED_KEYWORDS = [
 
 const ADDRESS_PATTERN = /\d+\s+[\w\s]+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|way|ct|court|pl|place|cir|circle)\b[^<]{0,120}(?:\d{4,6})/i;
 const ADDRESS_FORMAT_FULL = /\d+[^,\n]{2,40},\s*[A-Za-z\s]+,\s*[A-Za-z\s]{2,},\s*[\dA-Za-z\s\-]{3,10},\s*[A-Za-z\s]+/;
+
+// ─── Currency Patterns ───────────────────────────────────────────────────────
+
+const CURRENCY_PATTERNS = [
+  { code: "USD", symbols: ["$", "USD", "US$"] },
+  { code: "EUR", symbols: ["€", "EUR"] },
+  { code: "GBP", symbols: ["£", "GBP"] },
+  { code: "CAD", symbols: ["CAD", "CA$", "C$"] },
+  { code: "AUD", symbols: ["AUD", "AU$", "A$"] },
+  { code: "JPY", symbols: ["¥", "JPY"] },
+  { code: "INR", symbols: ["₹", "INR"] },
+];
 
 // ─── Main Scanner ─────────────────────────────────────────────────────────────
 
@@ -253,8 +279,19 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       : undefined,
   });
 
-  // ── Fetch additional pages in parallel ─────────────────────────────────
-  const contactPaths = ["/contact", "/pages/contact-us", "/pages/get-in-touch", "/contact-us", "/get-in-touch", "/getintouch", "/pages/contact"];
+  // ────────────────────────────────────────────────────────────────────────
+  // Fetch ALL pages we need in parallel
+  // ────────────────────────────────────────────────────────────────────────
+  const contactPaths = [
+    "/contact",
+    "/pages/contact-us",
+    "/pages/get-in-touch",
+    "/contact-us",
+    "/get-in-touch",
+    "/getintouch",
+    "/pages/contact",
+  ];
+
   const requiredPages = [
     { path: "/policies/terms-of-service", name: "Terms & Conditions", patterns: ["terms of service", "terms-of-service", "terms and conditions", "terms-and-conditions", "/policies/terms"] },
     { path: "/policies/privacy-policy", name: "Privacy Policy", patterns: ["privacy policy", "privacy-policy", "/policies/privacy"] },
@@ -273,48 +310,83 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   for (const rp of requiredPages) {
     pagesToFetch.push({ label: `required:${rp.name}`, url: `${url}${rp.path}` });
   }
-  // Also fetch some specific pages for additional detection
-  pagesToFetch.push({ label: "shipping_policy", url: `${url}/policies/shipping-policy` });
-  pagesToFetch.push({ label: "refund_policy", url: `${url}/policies/refund-policy` });
   pagesToFetch.push({ label: "collections_json", url: `${url}/collections.json` });
-  pagesToFetch.push({ label: "meta_json", url: `${url}/meta.json` });
 
   // Fetch all in parallel
   const fetchResults: Record<string, { ok: boolean; status: number; html: string }> = {};
-  const fetchPromises = pagesToFetch.map(async (p) => {
-    const result = await fetchPage(p.url);
-    fetchResults[p.label] = result;
-  });
-  await Promise.all(fetchPromises);
+  await Promise.all(
+    pagesToFetch.map(async (p) => {
+      const result = await fetchPage(p.url);
+      fetchResults[p.label] = result;
+    })
+  );
 
-  // ── 4. Contact Page 404 Checks ─────────────────────────────────────────
-  let anyContactPageFound = false;
-  const contactPageResults: { path: string; status: number; ok: boolean }[] = [];
+  // Also alias policy pages for easy access
+  const shippingRes = fetchResults["required:Shipping Policy"];
+  const refundRes = fetchResults["required:Returns & Refunds Policy"];
+  const termsRes = fetchResults["required:Terms & Conditions"];
+  const privacyRes = fetchResults["required:Privacy Policy"];
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 4. Contact Page Existence
+  //    Does the store have a working contact page at any common path?
+  // ────────────────────────────────────────────────────────────────────────
+  const contactPage404s: ContactPageResult[] = [];
+  let workingContactPagePath: string | null = null;
+
   for (const cp of contactPaths) {
     const key = `contact:${cp}`;
     const r = fetchResults[key];
-    if (r) {
-      contactPageResults.push({ path: cp, status: r.status, ok: r.ok });
-      if (r.ok && !r.html.toLowerCase().includes("page not found") && !r.html.toLowerCase().includes("404")) {
-        anyContactPageFound = true;
-      }
+    if (!r) continue;
+
+    const is404 = !r.ok ||
+      (r.html.toLowerCase().includes("page not found")) ||
+      (r.status === 404);
+
+    contactPage404s.push({
+      path: cp,
+      url: `${url}${cp}`,
+      is404,
+    });
+
+    if (!is404 && !workingContactPagePath) {
+      workingContactPagePath = cp;
     }
   }
 
   checks.push({
     id: "contact_page_exists",
-    category: "Contact Info",
-    name: "Contact Page Accessibility",
-    status: anyContactPageFound ? "pass" : "fail",
-    description: anyContactPageFound
-      ? "A working contact page was found on your store."
-      : `No working contact page found. Checked: ${contactPaths.join(", ")} — all returned 404 or page not found.`,
-    fix: !anyContactPageFound
-      ? "Create a contact page at /pages/contact-us and ensure it's linked in your navigation and footer."
+    category: "Contact Page",
+    name: "Contact Page Exists",
+    status: workingContactPagePath ? "pass" : "fail",
+    description: workingContactPagePath
+      ? `A working contact page was found at ${workingContactPagePath}.`
+      : "No working contact page found at any common path.",
+    fix: !workingContactPagePath
+      ? "Create a contact page at /pages/contact-us and link it in your navigation and footer."
       : undefined,
   });
 
-  // ── 5. Required Pages Check ────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 5. Contact Page 404 Errors
+  //    Individual report of which contact paths return 404
+  // ────────────────────────────────────────────────────────────────────────
+  const paths404 = contactPage404s.filter((c) => c.is404);
+  if (paths404.length > 0) {
+    const pathList = paths404.map((c) => c.url).join("\n");
+    checks.push({
+      id: "contact_page_404s",
+      category: "404 Errors",
+      name: `Contact Page 404s (${paths404.length} found)`,
+      status: "fail",
+      description: `The following contact page URLs return 404:\n${pathList}`,
+      fix: "Create pages at these URLs, or remove any links pointing to them. At minimum, ensure one contact page exists and is linked.",
+    });
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 6. Required Pages Check
+  // ────────────────────────────────────────────────────────────────────────
   for (const rp of requiredPages) {
     const key = `required:${rp.name}`;
     const r = fetchResults[key];
@@ -348,12 +420,15 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 6. Wrong Domain Links ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 7. Wrong Domain Links
+  //    Scan homepage + product pages + ALL policy pages
+  // ────────────────────────────────────────────────────────────────────────
   const wrongDomainLinks: WrongDomainLink[] = [];
   const allowedDomains = [
     storeDomain,
     "shopify.com", "myshopify.com", "cdn.shopify.com", "shopifycdn.com",
-    "google.com", "googleapis.com", "gstatic.com",
+    "google.com", "googleapis.com", "gstatic.com", "googletagmanager.com",
     "facebook.com", "fb.com", "instagram.com", "twitter.com", "x.com",
     "youtube.com", "tiktok.com", "pinterest.com", "linkedin.com",
     "apple.com", "apps.apple.com", "play.google.com",
@@ -366,7 +441,35 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   const pagesToScanForLinks: { html: string; pageType: string; foundOn: string }[] = [
     { html: homepageHtml, pageType: "Homepage", foundOn: url },
   ];
-  // Also scan a few product pages if we can find them
+
+  // Add policy pages to scan for wrong domain links
+  for (const rp of requiredPages) {
+    const key = `required:${rp.name}`;
+    const r = fetchResults[key];
+    if (r && r.ok) {
+      pagesToScanForLinks.push({
+        html: r.html,
+        pageType: "Policy",
+        foundOn: `${url}${rp.path}`,
+      });
+    }
+  }
+
+  // Add contact pages
+  for (const cp of contactPaths) {
+    const key = `contact:${cp}`;
+    const r = fetchResults[key];
+    if (r && r.ok && !r.html.toLowerCase().includes("page not found")) {
+      pagesToScanForLinks.push({
+        html: r.html,
+        pageType: "Other",
+        foundOn: `${url}${cp}`,
+      });
+      break; // Only add first working contact page to avoid duplicates
+    }
+  }
+
+  // Find product page links on homepage
   const productLinks: string[] = [];
   $('a[href*="/products/"]').each((_, el) => {
     const href = $(el).attr("href");
@@ -377,19 +480,21 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   });
 
   // Fetch up to 3 product pages for scanning
-  const productPagePromises = productLinks.slice(0, 3).map(async (pUrl) => {
-    const r = await fetchPage(pUrl);
-    if (r.ok) {
-      pagesToScanForLinks.push({ html: r.html, pageType: "Product", foundOn: pUrl });
-    }
-  });
-  await Promise.all(productPagePromises);
+  await Promise.all(
+    productLinks.slice(0, 3).map(async (pUrl) => {
+      const r = await fetchPage(pUrl);
+      if (r.ok) {
+        pagesToScanForLinks.push({ html: r.html, pageType: "Product", foundOn: pUrl });
+      }
+    })
+  );
 
+  // Scan all collected pages for wrong domain links
   for (const page of pagesToScanForLinks) {
     const $page = cheerio.load(page.html);
     $page("a[href]").each((_, el) => {
       const href = $page(el).attr("href") || "";
-      if (!href || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:") || href.startsWith("/") || href.startsWith("?")) {
+      if (!href || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:") || href.startsWith("/") || href.startsWith("?") || href.startsWith("data:")) {
         return;
       }
       try {
@@ -399,13 +504,16 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
           (d) => linkDomain === d || linkDomain.endsWith(`.${d}`)
         );
         if (!isAllowed && linkDomain !== storeDomain && !linkDomain.endsWith(`.${storeDomain}`)) {
-          wrongDomainLinks.push({
-            wrongDomain: linkDomain,
-            fullUrl: href,
-            linkText: $page(el).text().trim().substring(0, 100) || "(no text)",
-            pageType: page.pageType,
-            foundOn: page.foundOn,
-          });
+          // Avoid duplicate entries for same URL
+          if (!wrongDomainLinks.some((w) => w.fullUrl === href && w.foundOn === page.foundOn)) {
+            wrongDomainLinks.push({
+              wrongDomain: linkDomain,
+              fullUrl: href,
+              linkText: $page(el).text().trim().substring(0, 100) || "(no text)",
+              pageType: page.pageType,
+              foundOn: page.foundOn,
+            });
+          }
         }
       } catch {
         // skip invalid URLs
@@ -419,8 +527,8 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       category: "Link Integrity",
       name: "Wrong Domain Links",
       status: "fail",
-      description: `Found ${wrongDomainLinks.length} link(s) pointing to external/wrong domains. These may indicate template leftovers or incorrect links.`,
-      fix: "Review each flagged link and either remove it or update it to point to your own domain.",
+      description: `Found ${wrongDomainLinks.length} link(s) pointing to domains other than ${storeDomain}.`,
+      fix: "Review each flagged link and either remove it or update it to point to your own domain. These are often leftover template links.",
     });
   } else {
     checks.push({
@@ -428,19 +536,19 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       category: "Link Integrity",
       name: "Wrong Domain Links",
       status: "pass",
-      description: "No wrong-domain links were detected on your site.",
+      description: "No wrong-domain links were detected across your site pages.",
     });
   }
 
-  // ── 7. Email Domain Mismatch ───────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 8. Email Domain Mismatch
+  // ────────────────────────────────────────────────────────────────────────
   const emailMismatches: EmailMismatch[] = [];
   const allEmailsByPage: Record<string, string[]> = {};
 
-  // Collect emails from homepage
   const homepageEmails = extractEmails(homepageHtml);
   if (homepageEmails.length > 0) allEmailsByPage["Homepage"] = homepageEmails;
 
-  // Collect emails from contact pages
   for (const cp of contactPaths) {
     const key = `contact:${cp}`;
     const r = fetchResults[key];
@@ -450,7 +558,16 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     }
   }
 
-  // Aggregate and check domain mismatch
+  // Also check policy pages for emails
+  for (const rp of requiredPages) {
+    const key = `required:${rp.name}`;
+    const r = fetchResults[key];
+    if (r && r.ok) {
+      const emails = extractEmails(r.html);
+      if (emails.length > 0) allEmailsByPage[rp.name] = emails;
+    }
+  }
+
   const emailPageMap: Record<string, string[]> = {};
   for (const [page, emails] of Object.entries(allEmailsByPage)) {
     for (const email of emails) {
@@ -469,25 +586,27 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   if (emailMismatches.length > 0) {
     checks.push({
       id: "email_domain_mismatch",
-      category: "Contact Info",
+      category: "Email Integrity",
       name: "Email Domain Mismatch",
       status: "fail",
       description: `Found ${emailMismatches.length} email(s) with domains that don't match your store domain (${storeDomain}).`,
-      fix: "Use email addresses that match your store domain (e.g., support@" + storeDomain + ") to avoid GMC rejections.",
+      fix: `Use email addresses matching your store domain (e.g., support@${storeDomain}).`,
     });
   } else {
     checks.push({
       id: "email_domain_mismatch",
-      category: "Contact Info",
+      category: "Email Integrity",
       name: "Email Domain Match",
       status: Object.keys(emailPageMap).length > 0 ? "pass" : "warning",
       description: Object.keys(emailPageMap).length > 0
         ? "All email addresses found match your store domain."
-        : "No email addresses were found to check.",
+        : "No email addresses were found on the site.",
     });
   }
 
-  // ── 8. Collection Checks (Shopify API) ─────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 9. Collection Checks (Shopify API)
+  // ────────────────────────────────────────────────────────────────────────
   const collectionIssues: CollectionIssue[] = [];
   const collectionsRes = fetchResults["collections_json"];
   let collectionsData: { collections?: { handle: string; title: string; products_count?: number }[] } | null = null;
@@ -501,33 +620,34 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   }
 
   if (collectionsData?.collections) {
-    for (const col of collectionsData.collections) {
-      // Fetch individual collection to get actual product count
-      let activeProducts = col.products_count ?? 0;
-      try {
-        const colRes = await fetchPage(`${url}/collections/${col.handle}/products.json?limit=250`);
-        if (colRes.ok) {
-          const colData = JSON.parse(colRes.html);
-          activeProducts = colData.products?.length ?? 0;
-        }
-      } catch {
-        // Use products_count from the listing
-      }
+    // Fetch product counts in parallel (batch of 10 at a time)
+    const colBatches: typeof collectionsData.collections = [...collectionsData.collections];
+    const colResults: { col: typeof colBatches[0]; activeProducts: number }[] = [];
 
+    for (let i = 0; i < colBatches.length; i += 10) {
+      const batch = colBatches.slice(i, i + 10);
+      await Promise.all(
+        batch.map(async (col) => {
+          let activeProducts = col.products_count ?? 0;
+          try {
+            const colRes = await fetchPage(`${url}/collections/${col.handle}/products.json?limit=250`);
+            if (colRes.ok) {
+              const colData = JSON.parse(colRes.html);
+              activeProducts = colData.products?.length ?? 0;
+            }
+          } catch {
+            // Use products_count from listing
+          }
+          colResults.push({ col, activeProducts });
+        })
+      );
+    }
+
+    for (const { col, activeProducts } of colResults) {
       if (activeProducts === 0) {
-        collectionIssues.push({
-          name: col.title,
-          url: `${url}/collections/${col.handle}`,
-          activeProducts: 0,
-          empty: true,
-        });
+        collectionIssues.push({ name: col.title, url: `${url}/collections/${col.handle}`, activeProducts: 0, empty: true });
       } else if (activeProducts < 5) {
-        collectionIssues.push({
-          name: col.title,
-          url: `${url}/collections/${col.handle}`,
-          activeProducts,
-          empty: false,
-        });
+        collectionIssues.push({ name: col.title, url: `${url}/collections/${col.handle}`, activeProducts, empty: false });
       }
     }
   }
@@ -541,22 +661,20 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       category: "Collections",
       name: "Empty Collections",
       status: "fail",
-      description: `Found ${emptyCollections.length} collection(s) with 0 active products. Empty collections can cause GMC disapprovals.`,
+      description: `Found ${emptyCollections.length} collection(s) with 0 active products.`,
       fix: "Add products to empty collections or remove/hide them from your store navigation.",
     });
   }
-
   if (lowProductCollections.length > 0) {
     checks.push({
       id: "low_product_collections",
       category: "Collections",
       name: "Collections With < 5 Products",
       status: "warning",
-      description: `Found ${lowProductCollections.length} collection(s) with fewer than 5 active products. Google recommends at least 5 products per collection.`,
-      fix: "Add more products to these collections or consolidate them into larger collections.",
+      description: `Found ${lowProductCollections.length} collection(s) with fewer than 5 active products.`,
+      fix: "Add more products to these collections or consolidate them.",
     });
   }
-
   if (emptyCollections.length === 0 && lowProductCollections.length === 0) {
     checks.push({
       id: "collections_healthy",
@@ -569,7 +687,9 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 9. Store Intelligence Extraction ───────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 10. Store Intelligence Extraction
+  // ────────────────────────────────────────────────────────────────────────
   const storeIntelligence: StoreIntelligence = {
     domainAge: null,
     domainCreatedDate: null,
@@ -580,18 +700,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     theme: null,
   };
 
-  // Currency detection
-  const currencyPatterns = [
-    { code: "USD", symbols: ["$", "USD", "US$"] },
-    { code: "EUR", symbols: ["€", "EUR"] },
-    { code: "GBP", symbols: ["£", "GBP"] },
-    { code: "CAD", symbols: ["CAD", "CA$", "C$"] },
-    { code: "AUD", symbols: ["AUD", "AU$", "A$"] },
-    { code: "JPY", symbols: ["¥", "JPY"] },
-    { code: "INR", symbols: ["₹", "INR"] },
-  ];
-
-  // Check meta tags and JSON-LD for currency
+  // Currency
   const currencyMeta = homepageHtml.match(/"priceCurrency"\s*:\s*"([A-Z]{3})"/i) ||
     homepageHtml.match(/"currency"\s*:\s*"([A-Z]{3})"/i) ||
     homepageHtml.match(/data-currency="([A-Z]{3})"/i) ||
@@ -599,7 +708,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   if (currencyMeta) {
     storeIntelligence.currency = currencyMeta[1].toUpperCase();
   } else {
-    for (const cp of currencyPatterns) {
+    for (const cp of CURRENCY_PATTERNS) {
       if (homepageHtml.includes(cp.symbols[0]) || homepageHtml.includes(cp.code)) {
         storeIntelligence.currency = cp.code;
         break;
@@ -607,26 +716,25 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     }
   }
 
-  // Language detection
+  // Language
   const langAttr = $("html").attr("lang");
   if (langAttr) storeIntelligence.language = langAttr;
 
-  // Jurisdiction / locale from Shopify
+  // Jurisdiction
   const jurisdictionMatch = homepageHtml.match(/Shopify\.shop\s*=\s*"([^"]+)"/i) ||
     homepageHtml.match(/"country"\s*:\s*"([^"]+)"/i) ||
     homepageHtml.match(/"countryCode"\s*:\s*"([^"]+)"/i);
   if (jurisdictionMatch) storeIntelligence.jurisdiction = jurisdictionMatch[1];
 
-  // Timezone from Shopify
+  // Timezone
   const tzMatch = homepageHtml.match(/"timezone"\s*:\s*"([^"]+)"/i) ||
     homepageHtml.match(/Shopify\.timezone\s*=\s*"([^"]+)"/i);
   if (tzMatch) storeIntelligence.timezone = tzMatch[1];
 
-  // Theme detection
+  // Theme
   const themeMatch = homepageHtml.match(/Shopify\.theme\s*=\s*\{[^}]*"name"\s*:\s*"([^"]+)"/i) ||
     homepageHtml.match(/theme_name["']\s*:\s*["']([^"']+)/i);
   if (themeMatch) storeIntelligence.theme = themeMatch[1];
-  // Also check for common theme identifiers
   if (!storeIntelligence.theme) {
     const themeStylesheet = $('link[href*="theme."]').attr("href");
     if (themeStylesheet) {
@@ -635,7 +743,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     }
   }
 
-  // Domain age via RDAP (free, no API key needed)
+  // Domain age via RDAP
   try {
     const rdapRes = await fetch(`https://rdap.org/domain/${storeDomain}`, {
       headers: { Accept: "application/rdap+json" },
@@ -650,30 +758,23 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
         storeIntelligence.domainCreatedDate = createdDate.toISOString().split("T")[0];
         const ageMs = Date.now() - createdDate.getTime();
         const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
-        if (ageDays >= 365) {
-          const years = Math.floor(ageDays / 365);
-          storeIntelligence.domainAge = `${years} year${years > 1 ? "s" : ""}`;
-        } else {
-          storeIntelligence.domainAge = `${ageDays} days`;
-        }
+        storeIntelligence.domainAge = ageDays >= 365
+          ? `${Math.floor(ageDays / 365)} year${Math.floor(ageDays / 365) > 1 ? "s" : ""}`
+          : `${ageDays} days`;
 
-        // Domain age check (12+ days before GMC creation)
         checks.push({
           id: "domain_age",
           category: "Domain",
           name: "Domain Age (12+ Days)",
           status: ageDays >= 12 ? "pass" : "fail",
           description: ageDays >= 12
-            ? `Domain was registered ${storeIntelligence.domainAge} ago (${storeIntelligence.domainCreatedDate}). Meets the 12-day minimum.`
-            : `Domain is only ${ageDays} day(s) old (registered ${storeIntelligence.domainCreatedDate}). Google requires at least 12 days before GMC creation.`,
-          fix: ageDays < 12
-            ? `Wait ${12 - ageDays} more day(s) before submitting to Google Merchant Center.`
-            : undefined,
+            ? `Domain registered ${storeIntelligence.domainAge} ago (${storeIntelligence.domainCreatedDate}). Meets the 12-day minimum.`
+            : `Domain is only ${ageDays} day(s) old (registered ${storeIntelligence.domainCreatedDate}). Requires 12+ days for GMC.`,
+          fix: ageDays < 12 ? `Wait ${12 - ageDays} more day(s) before submitting to Google Merchant Center.` : undefined,
         });
       }
     }
   } catch {
-    // RDAP lookup failed — skip silently
     checks.push({
       id: "domain_age",
       category: "Domain",
@@ -683,97 +784,123 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 10. Contact Information Presence Check ─────────────────────────────
-  const contactPresence: ContactPresence = {
-    email: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-    phone: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-    address: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-    supportHours: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-  };
-
-  // Helper to check presence in HTML
-  const checkContactIn = (html: string, location: "inFooter" | "inContactPage" | "inPolicies") => {
-    const emails = extractEmails(html);
-    if (emails.length > 0) {
-      contactPresence.email.found = true;
-      contactPresence.email[location] = true;
-      if (!contactPresence.email.value) contactPresence.email.value = emails[0];
-    }
-    const phones = extractPhones(html);
-    if (phones.length > 0) {
-      contactPresence.phone.found = true;
-      contactPresence.phone[location] = true;
-      if (!contactPresence.phone.value) contactPresence.phone.value = phones[0];
-    }
-    if (ADDRESS_PATTERN.test(html)) {
-      contactPresence.address.found = true;
-      contactPresence.address[location] = true;
-      const addrMatch = html.match(ADDRESS_PATTERN);
-      if (addrMatch && !contactPresence.address.value) contactPresence.address.value = addrMatch[0].trim().substring(0, 200);
-    }
-    const hoursPatterns = /(?:hours|support hours|business hours|opening hours|open\s+\d|mon(?:day)?[\s\-–]+(?:fri|sat|sun)|(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)))/i;
-    if (hoursPatterns.test(html)) {
-      contactPresence.supportHours.found = true;
-      contactPresence.supportHours[location] = true;
-    }
-  };
-
-  // Check footer (last 30% of homepage HTML roughly, or look for <footer>)
+  // ────────────────────────────────────────────────────────────────────────
+  // 11. Footer Requirements
+  //     Email, phone, address must be in the site footer
+  // ────────────────────────────────────────────────────────────────────────
   const footerHtml = $("footer").html() || "";
-  checkContactIn(footerHtml, "inFooter");
+  const footerText = getFooterText($);
+  const footerEmails = extractEmails(footerHtml);
+  const footerPhones = extractPhones(footerHtml);
+  const footerHasAddress = ADDRESS_PATTERN.test(footerHtml);
 
-  // Check contact pages
-  for (const cp of contactPaths) {
-    const key = `contact:${cp}`;
-    const r = fetchResults[key];
-    if (r && r.ok) {
-      checkContactIn(r.html, "inContactPage");
-    }
-  }
+  checks.push({
+    id: "footer_email",
+    category: "Footer Requirements",
+    name: "Email in Footer",
+    status: footerEmails.length > 0 ? "pass" : "fail",
+    description: footerEmails.length > 0
+      ? `Email found in footer: ${footerEmails[0]}`
+      : "No email address found in the footer.",
+    fix: footerEmails.length === 0 ? "Add your business email address to your site footer." : undefined,
+  });
 
-  // Check policy pages
-  for (const rp of requiredPages) {
-    const key = `required:${rp.name}`;
-    const r = fetchResults[key];
-    if (r && r.ok) {
-      checkContactIn(r.html, "inPolicies");
-    }
-  }
+  checks.push({
+    id: "footer_phone",
+    category: "Footer Requirements",
+    name: "Phone in Footer",
+    status: footerPhones.length > 0 ? "pass" : "warning",
+    description: footerPhones.length > 0
+      ? `Phone number found in footer: ${footerPhones[0]}`
+      : "No phone number found in the footer.",
+    fix: footerPhones.length === 0 ? "Add your business phone number to your site footer." : undefined,
+  });
 
-  // Add checks for contact presence
-  const contactItems = [
-    { key: "email" as const, name: "Email Address" },
-    { key: "phone" as const, name: "Phone Number" },
-    { key: "address" as const, name: "Physical Address" },
-    { key: "supportHours" as const, name: "Support Hours" },
+  checks.push({
+    id: "footer_address",
+    category: "Footer Requirements",
+    name: "Physical Address in Footer",
+    status: footerHasAddress ? "pass" : "fail",
+    description: footerHasAddress
+      ? "A physical address was found in the footer."
+      : "No physical address found in the footer.",
+    fix: !footerHasAddress ? "Add your business address in the format: 123 Main Street, City, State, 12345, Country to your footer." : undefined,
+  });
+
+  // Support hours in footer
+  const hoursRegex = /(?:hours|support hours|business hours|opening hours|open\s+\d|mon(?:day)?[\s\-–]+(?:fri|sat|sun)|(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)))/i;
+  const footerHasHours = hoursRegex.test(footerText);
+  checks.push({
+    id: "footer_hours",
+    category: "Footer Requirements",
+    name: "Support Hours in Footer",
+    status: footerHasHours ? "pass" : "warning",
+    description: footerHasHours
+      ? "Support/business hours found in the footer."
+      : "No support hours found in the footer.",
+    fix: !footerHasHours ? "Add your support/business hours to the footer (e.g., Mon-Fri 9am-5pm EST)." : undefined,
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 12. Policy Page Requirements
+  //     Each policy page must contain contact info (email, phone, address)
+  // ────────────────────────────────────────────────────────────────────────
+  const policyContactChecks: PolicyContactCheck[] = [];
+  const policiesToCheck = [
+    { name: "Shipping Policy", key: "required:Shipping Policy" },
+    { name: "Returns & Refunds Policy", key: "required:Returns & Refunds Policy" },
+    { name: "Privacy Policy", key: "required:Privacy Policy" },
+    { name: "Terms & Conditions", key: "required:Terms & Conditions" },
+    { name: "Billing Terms & Conditions", key: "required:Billing Terms & Conditions" },
   ];
 
-  for (const item of contactItems) {
-    const data = contactPresence[item.key];
-    const locations: string[] = [];
-    if (data.inFooter) locations.push("footer");
-    if (data.inContactPage) locations.push("contact page");
-    if (data.inPolicies) locations.push("policy pages");
+  for (const pol of policiesToCheck) {
+    const r = fetchResults[pol.key];
+    if (!r || !r.ok) continue;
 
-    const allPresent = data.inFooter && data.inContactPage && data.inPolicies;
+    const policyEmails = extractEmails(r.html);
+    const policyPhones = extractPhones(r.html);
+    const policyHasAddress = ADDRESS_PATTERN.test(r.html);
 
-    checks.push({
-      id: `contact_presence_${item.key}`,
-      category: "Contact Info",
-      name: `${item.name} Presence`,
-      status: allPresent ? "pass" : data.found ? "warning" : "fail",
-      description: allPresent
-        ? `${item.name} found in footer, contact page, and policy pages.${data.value ? ` (${data.value})` : ""}`
-        : data.found
-          ? `${item.name} found in: ${locations.join(", ")}. Missing from: ${["footer", "contact page", "policy pages"].filter((l) => !locations.includes(l)).join(", ")}.${data.value ? ` (${data.value})` : ""}`
-          : `No ${item.name.toLowerCase()} found anywhere on the site. GMC requires this to be in the footer, contact page, and linked in every policy.`,
-      fix: !allPresent
-        ? `Add your ${item.name.toLowerCase()} to the footer, /pages/contact, and link it in every policy page.`
-        : undefined,
+    const rp = requiredPages.find((p) => p.name === pol.name);
+    const policyUrl = rp ? `${url}${rp.path}` : "";
+
+    policyContactChecks.push({
+      policyName: pol.name,
+      policyUrl,
+      hasEmail: policyEmails.length > 0,
+      hasPhone: policyPhones.length > 0,
+      hasAddress: policyHasAddress,
     });
+
+    const missing: string[] = [];
+    if (policyEmails.length === 0) missing.push("email");
+    if (policyPhones.length === 0) missing.push("phone");
+    if (!policyHasAddress) missing.push("physical address");
+
+    if (missing.length > 0) {
+      checks.push({
+        id: `policy_contact_${pol.name.toLowerCase().replace(/[^a-z]/g, "_")}`,
+        category: "Policy Requirements",
+        name: `Contact Info in ${pol.name}`,
+        status: "fail",
+        description: `${pol.name} is missing: ${missing.join(", ")}.`,
+        fix: `Add your ${missing.join(", ")} to your ${pol.name} page.`,
+      });
+    } else {
+      checks.push({
+        id: `policy_contact_${pol.name.toLowerCase().replace(/[^a-z]/g, "_")}`,
+        category: "Policy Requirements",
+        name: `Contact Info in ${pol.name}`,
+        status: "pass",
+        description: `${pol.name} contains email, phone, and physical address.`,
+      });
+    }
   }
 
-  // ── 11. Business Address Format ────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 13. Business Address Format
+  // ────────────────────────────────────────────────────────────────────────
   const allHtml = homepageHtml + " " + footerHtml + " " +
     Object.entries(fetchResults)
       .filter(([k]) => k.startsWith("contact:") || k.startsWith("required:"))
@@ -794,17 +921,16 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
         ? "An address was found but may not be in the required format: [Street + Number], [City], [State/Province], [Zipcode], [Country]."
         : "No business address found. GMC requires a correctly formatted physical address.",
     fix: !addressFormatCorrect
-      ? "Add your business address in the format: 123 Main Street, City, State, 12345, Country — visible in footer and contact page."
+      ? "Add your business address in the format: 123 Main Street, City, State, 12345, Country — visible in footer, contact page, and all policies."
       : undefined,
   });
 
-  // ── 12. Shipping Policy Details ────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 14. Shipping Policy Details
+  // ────────────────────────────────────────────────────────────────────────
   let shippingPolicyDetails: ShippingPolicyDetails | null = null;
-  const shippingRes = fetchResults["shipping_policy"];
   if (shippingRes && shippingRes.ok) {
-    const $ship = cheerio.load(shippingRes.html);
-    const shipText = extractTextContent($ship);
-    const shipLower = shipText.toLowerCase();
+    const shipText = getVisibleText(shippingRes.html);
 
     shippingPolicyDetails = {
       found: true,
@@ -815,8 +941,8 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       cutoffTime: null,
     };
 
-    // Extract shipping currency
-    for (const cp of currencyPatterns) {
+    // Currency
+    for (const cp of CURRENCY_PATTERNS) {
       for (const sym of cp.symbols) {
         if (shipText.includes(sym)) {
           shippingPolicyDetails.currency = cp.code;
@@ -826,66 +952,55 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       if (shippingPolicyDetails.currency) break;
     }
 
-    // Extract shipping cost
-    const costMatch = shipText.match(/(?:shipping\s+(?:cost|fee|rate|charge)s?\s*(?:is|are|:)?\s*)([\$€£¥₹]?\s*[\d,.]+(?:\s*[-–]\s*[\$€£¥₹]?\s*[\d,.]+)?)/i) ||
-      shipText.match(/(?:free shipping)/i) ||
-      shipText.match(/([\$€£¥₹]\s*[\d,.]+)\s*(?:shipping|delivery|flat rate)/i);
+    // Cost - broader patterns
+    const costMatch = shipText.match(/free shipping/i) ||
+      shipText.match(/([\$€£¥₹]\s*[\d,.]+)\s*(?:flat\s*rate|shipping|delivery)/i) ||
+      shipText.match(/(?:shipping|delivery)\s*(?:cost|fee|rate|charge)s?\s*(?:is|are|of|:)?\s*([\$€£¥₹]?\s*[\d,.]+)/i) ||
+      shipText.match(/(?:flat\s*rate|standard)\s*(?:shipping)?\s*(?:of|:)?\s*([\$€£¥₹]\s*[\d,.]+)/i);
     if (costMatch) shippingPolicyDetails.cost = costMatch[0].trim().substring(0, 100);
 
-    // Extract shipping time
-    const timeMatch = shipText.match(/(\d+\s*[-–]\s*\d+\s*(?:business\s+)?(?:days?|weeks?))/i) ||
-      shipText.match(/((?:within|approximately|about)\s+\d+\s*[-–]?\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i);
+    // Time - broader patterns
+    const timeMatch = shipText.match(/(\d+\s*[-–to]+\s*\d+\s*(?:business\s+)?(?:days?|weeks?|working days?))/i) ||
+      shipText.match(/((?:within|approximately|about|up to|typically)\s+\d+\s*[-–]?\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
+      shipText.match(/(\d+\s*(?:business\s+)?(?:days?|weeks?))\s*(?:delivery|shipping|transit|processing)/i) ||
+      shipText.match(/(?:delivery|shipping|transit|processing)\s*(?:time|period)?\s*(?:is|are|of|:)?\s*(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i);
     if (timeMatch) shippingPolicyDetails.time = timeMatch[0].trim().substring(0, 100);
 
-    // Extract shipping countries
-    const countriesMatch = shipText.match(/(?:ship(?:ping)?\s+(?:to|within|available in)\s*:?\s*)([^.]+)/i) ||
-      shipText.match(/(?:we\s+(?:ship|deliver)\s+(?:to|within)\s*)([^.]+)/i);
+    // Countries
+    const countriesMatch = shipText.match(/(?:ship(?:ping)?|deliver(?:y)?)\s*(?:to|within|available\s+in|across)\s*:?\s*([^.]{5,100})/i) ||
+      shipText.match(/(?:we\s+(?:ship|deliver)\s+(?:to|within|across))\s*([^.]{5,100})/i) ||
+      shipText.match(/(?:available|shipping)\s+(?:in|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally|all\s+\d+\s+states)[^.]*/i);
     if (countriesMatch) shippingPolicyDetails.countries = countriesMatch[0].trim().substring(0, 200);
 
-    // Extract order cutoff time
-    const cutoffMatch = shipText.match(/(?:order(?:s)?\s+(?:placed\s+)?(?:before|by)\s+)([\d:]+\s*(?:am|pm|[A-Z]{2,4}))/i) ||
-      shipText.match(/(?:cutoff|cut-off|cut off)\s*(?:time)?\s*(?:is|:)?\s*([\d:]+\s*(?:am|pm|[A-Z]{2,4}))/i);
+    // Cutoff time
+    const cutoffMatch = shipText.match(/(?:order(?:s)?\s+(?:placed\s+)?(?:before|by)\s+)([\d:]+\s*(?:am|pm)\s*(?:[A-Z]{2,4})?)/i) ||
+      shipText.match(/(?:cutoff|cut-off|cut off)\s*(?:time)?\s*(?:is|:)?\s*([\d:]+\s*(?:am|pm)\s*(?:[A-Z]{2,4})?)/i);
     if (cutoffMatch) shippingPolicyDetails.cutoffTime = cutoffMatch[0].trim().substring(0, 100);
 
-    // Checks for shipping info
+    // Checks
     const shipChecks = [
       { key: "cost", label: "Shipping Cost", value: shippingPolicyDetails.cost },
       { key: "time", label: "Shipping Time", value: shippingPolicyDetails.time },
       { key: "countries", label: "Shipping Countries", value: shippingPolicyDetails.countries },
     ];
-
     for (const sc of shipChecks) {
       checks.push({
         id: `shipping_${sc.key}`,
         category: "Shipping Policy",
         name: sc.label,
         status: sc.value ? "pass" : "warning",
-        description: sc.value
-          ? `Detected: ${sc.value}`
-          : `Could not detect ${sc.label.toLowerCase()} information in your shipping policy.`,
-        fix: !sc.value
-          ? `Add clear ${sc.label.toLowerCase()} information to your /policies/shipping-policy page.`
-          : undefined,
+        description: sc.value ? `Detected: ${sc.value}` : `Could not detect ${sc.label.toLowerCase()} in your shipping policy.`,
+        fix: !sc.value ? `Add clear ${sc.label.toLowerCase()} info to /policies/shipping-policy.` : undefined,
       });
     }
 
-    // Check if the shipping page mentions currency
     if (shippingPolicyDetails.currency) {
       checks.push({
         id: "shipping_currency",
         category: "Shipping Policy",
         name: "Shipping Currency",
         status: "pass",
-        description: `Shipping prices are shown in ${shippingPolicyDetails.currency}.`,
-      });
-    } else if (!shipLower.includes("free")) {
-      checks.push({
-        id: "shipping_currency",
-        category: "Shipping Policy",
-        name: "Shipping Currency",
-        status: "warning",
-        description: "Could not detect a clear currency for shipping costs.",
-        fix: "Ensure shipping costs clearly indicate the currency (e.g., $5.99 USD).",
+        description: `Shipping prices shown in ${shippingPolicyDetails.currency}.`,
       });
     }
   } else {
@@ -899,12 +1014,13 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 13. Refund Policy Details ──────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 15. Refund Policy Details
+  //     Much broader regex patterns to catch real-world phrasings
+  // ────────────────────────────────────────────────────────────────────────
   let refundPolicyDetails: RefundPolicyDetails | null = null;
-  const refundRes = fetchResults["refund_policy"];
   if (refundRes && refundRes.ok) {
-    const $refund = cheerio.load(refundRes.html);
-    const refundText = extractTextContent($refund);
+    const refundText = getVisibleText(refundRes.html);
 
     refundPolicyDetails = {
       found: true,
@@ -915,28 +1031,45 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       restockingFees: null,
     };
 
-    // Return window
-    const windowMatch = refundText.match(/(\d+)\s*(?:[-–])?\s*(?:day|calendar day|business day)s?\s*(?:return|refund|exchange|money.back)/i) ||
-      refundText.match(/(?:return|refund|exchange|money.back)\s*(?:within|period|window)\s*(?:of\s*)?(\d+)\s*(?:days?)/i);
-    if (windowMatch) refundPolicyDetails.returnWindow = windowMatch[0].trim().substring(0, 100);
+    // Return window - very broad patterns
+    const windowMatch =
+      refundText.match(/(\d+)\s*[-–]?\s*(?:day|calendar day|business day)s?\s*(?:return|refund|exchange|money[\s-]?back)/i) ||
+      refundText.match(/(?:return|refund|exchange|money[\s-]?back)\s*(?:within|period|window|policy)\s*(?:of\s*|is\s*)?(\d+)\s*(?:[-–]?\s*\d*\s*)?(?:calendar\s+|business\s+)?days?/i) ||
+      refundText.match(/(?:have|within|allow(?:ed)?|offer|provide|grant)\s+(\d+)\s*(?:calendar\s+|business\s+)?days?\s+(?:to|for|from|of|after)\s+(?:return|request|initiate|notify)/i) ||
+      refundText.match(/(\d+)\s*[-–]?\s*day\s*(?:return|refund|money[\s-]?back)\s*(?:policy|guarantee|period|window)/i) ||
+      refundText.match(/(?:return|refund)\s+(?:your\s+)?(?:item|product|order|purchase)s?\s+(?:within|up to)\s+(\d+)\s*days?/i) ||
+      refundText.match(/(\d+)\s*days?\s*(?:from|after|of)\s*(?:the\s*)?(?:date\s*(?:of\s*)?)?(?:purchase|delivery|receipt|arrival)/i);
+    if (windowMatch) refundPolicyDetails.returnWindow = windowMatch[0].trim().substring(0, 120);
 
-    // Return shipping
-    const returnShipMatch = refundText.match(/(?:return\s+shipping|shipping\s+(?:for\s+)?return)[\s\S]{0,80}(?:customer|buyer|seller|we|us|free|prepaid|label)/i);
+    // Return shipping - broader
+    const returnShipMatch =
+      refundText.match(/(?:return\s+shipping|shipping\s+(?:for\s+)?(?:the\s+)?return)[\s\S]{0,100}(?:customer|buyer|seller|we|us|free|prepaid|label|responsible|paid|cost)/i) ||
+      refundText.match(/(?:customer|buyer|you)\s+(?:is|are|will be)\s+responsible\s+for\s+(?:return\s+)?shipping/i) ||
+      refundText.match(/(?:we|seller)\s+(?:will|shall)\s+(?:pay|cover|provide)\s+(?:the\s+)?(?:return\s+)?shipping/i) ||
+      refundText.match(/(?:free|prepaid|pre-paid)\s+return\s*(?:shipping|label)/i);
     if (returnShipMatch) refundPolicyDetails.returnShipping = returnShipMatch[0].trim().substring(0, 150);
 
-    // Processing time
-    const procMatch = refundText.match(/(?:refund|credit|reimburs)[\s\S]{0,60}(\d+\s*[-–]?\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
-      refundText.match(/(\d+\s*[-–]\s*\d+\s*(?:business\s+)?(?:days?|weeks?))\s*(?:to\s+)?(?:process|receive|refund)/i);
+    // Processing time - broader
+    const procMatch =
+      refundText.match(/(?:refund|credit|reimburs(?:e|ement))[\s\S]{0,80}?(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
+      refundText.match(/(\d+\s*[-–to]+\s*\d+\s*(?:business\s+)?(?:days?|weeks?))\s*(?:to\s+)?(?:process|receive|issue|complete)\s*(?:the\s+)?(?:refund|credit)/i) ||
+      refundText.match(/(?:process(?:ed|ing)?|issued?|receive)\s+(?:(?:your|the|a)\s+)?(?:refund|credit)\s+(?:within|in)\s+(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
+      refundText.match(/(?:refund|credit)\s+(?:will\s+(?:be\s+)?)?(?:process(?:ed)?|appear|show|reflect)\s+(?:within|in)\s+(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i);
     if (procMatch) refundPolicyDetails.processingTime = procMatch[0].trim().substring(0, 150);
 
-    // Exchanges
-    const exchangeMatch = refundText.match(/exchange[s]?\s+(?:are\s+)?(?:allowed|accepted|available|not\s+(?:allowed|accepted|available))/i) ||
-      refundText.match(/(?:we\s+(?:do|don'?t)\s+(?:offer|accept)\s+)?exchange/i);
+    // Exchanges - broader
+    const exchangeMatch =
+      refundText.match(/exchange[s]?\s+(?:are\s+)?(?:allowed|accepted|available|offered|not\s+(?:allowed|accepted|available|offered))/i) ||
+      refundText.match(/(?:we\s+(?:do|don'?t|cannot|can not)\s+(?:offer|accept|process)\s+)?exchange[s]?/i) ||
+      refundText.match(/(?:no|only)\s+exchange/i) ||
+      refundText.match(/exchange\s+(?:for|with)\s+(?:a\s+)?(?:different|another|same|equal)/i);
     if (exchangeMatch) refundPolicyDetails.exchangesAllowed = exchangeMatch[0].trim().substring(0, 100);
 
-    // Restocking fees
-    const restockMatch = refundText.match(/restock(?:ing)?\s+fee[\s\S]{0,60}(?:\d+%?|no|none|waived)/i) ||
-      refundText.match(/(?:no|none|waived|\d+%?)\s*restock(?:ing)?\s+fee/i);
+    // Restocking fees - broader
+    const restockMatch =
+      refundText.match(/restock(?:ing)?\s+fee[\s\S]{0,80}?(?:\d+%?|no|none|waived|not\s+charge)/i) ||
+      refundText.match(/(?:no|none|waived|not?\s+(?:any\s+)?(?:charge)?|\d+%?)\s*restock(?:ing)?\s+fee/i) ||
+      refundText.match(/(?:subject\s+to\s+a?\s*)(\d+%?\s*)?restock(?:ing)?\s+fee/i);
     if (restockMatch) refundPolicyDetails.restockingFees = restockMatch[0].trim().substring(0, 100);
 
     const refundChecks = [
@@ -946,19 +1079,14 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       { key: "exchangesAllowed", label: "Exchanges Policy", value: refundPolicyDetails.exchangesAllowed },
       { key: "restockingFees", label: "Restocking Fees", value: refundPolicyDetails.restockingFees },
     ];
-
     for (const rc of refundChecks) {
       checks.push({
         id: `refund_${rc.key}`,
         category: "Refund Policy",
         name: rc.label,
         status: rc.value ? "pass" : "warning",
-        description: rc.value
-          ? `Detected: ${rc.value}`
-          : `Could not detect ${rc.label.toLowerCase()} information in your refund policy.`,
-        fix: !rc.value
-          ? `Add clear ${rc.label.toLowerCase()} information to your /policies/refund-policy page.`
-          : undefined,
+        description: rc.value ? `Detected: ${rc.value}` : `Could not detect ${rc.label.toLowerCase()} in your refund policy.`,
+        fix: !rc.value ? `Add clear ${rc.label.toLowerCase()} info to /policies/refund-policy.` : undefined,
       });
     }
   } else {
@@ -972,12 +1100,13 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 14. Targeted Copy Detection ────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────
+  // 16. Targeted Copy Detection
+  // ────────────────────────────────────────────────────────────────────────
   const targetedCopy: TargetedCopyItem[] = [];
   const pagesToCheckForCopy: { label: string; html: string }[] = [
     { label: "Homepage", html: homepageHtml },
   ];
-  // Add product pages
   for (const page of pagesToScanForLinks) {
     if (page.pageType === "Product") {
       pagesToCheckForCopy.push({ label: page.foundOn, html: page.html });
@@ -985,26 +1114,20 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   }
 
   for (const page of pagesToCheckForCopy) {
-    const $p = cheerio.load(page.html);
-    // Remove scripts and styles to only get visible text
-    $p("script, style, noscript").remove();
-    const visibleText = $p("body").text();
+    const visibleText = getVisibleText(page.html);
 
     for (const keyword of TARGETED_KEYWORDS) {
       const regex = new RegExp(`(?:[^\\w]|^)(${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?:[^\\w]|$)`, "gi");
-      let match;
-      while ((match = regex.exec(visibleText)) !== null) {
-        // Get surrounding context (40 chars before and after)
+      const match = regex.exec(visibleText);
+      if (match) {
         const start = Math.max(0, match.index - 40);
         const end = Math.min(visibleText.length, match.index + match[0].length + 40);
         const context = visibleText.substring(start, end).replace(/\s+/g, " ").trim();
-
         targetedCopy.push({
           keyword,
           context: `...${context}...`,
           foundOn: page.label,
         });
-        break; // Only report each keyword once per page
       }
     }
   }
@@ -1015,8 +1138,8 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       category: "Content Compliance",
       name: "Targeted Health/Medical Copy",
       status: "warning",
-      description: `Found ${targetedCopy.length} instance(s) of potentially targeted or medical/health claim language that could trigger GMC review.`,
-      fix: "Review flagged copy and remove or soften any health claims, medical terminology, or overly targeted language. Google restricts health-related product claims.",
+      description: `Found ${targetedCopy.length} instance(s) of potentially targeted language that could trigger GMC review.`,
+      fix: "Review flagged copy and remove or soften health claims, medical terminology, or overly targeted language.",
     });
   } else {
     checks.push({
@@ -1028,9 +1151,9 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     });
   }
 
-  // ── 15. SEO & Branding (from original scanner) ────────────────────────
-
-  // Meta description
+  // ────────────────────────────────────────────────────────────────────────
+  // 17. SEO & Branding
+  // ────────────────────────────────────────────────────────────────────────
   const hasMetaDescription = htmlLower.includes('name="description"') || htmlLower.includes("name='description'");
   checks.push({
     id: "meta_description",
@@ -1039,13 +1162,10 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     status: hasMetaDescription ? "pass" : "warning",
     description: hasMetaDescription
       ? "A meta description tag was found on your homepage."
-      : "No meta description was found. This can affect how Google displays your site.",
-    fix: !hasMetaDescription
-      ? "Add a meta description to your homepage. In Shopify: Online Store > Preferences > Home page meta description."
-      : undefined,
+      : "No meta description was found.",
+    fix: !hasMetaDescription ? "Add a meta description in Shopify: Online Store > Preferences." : undefined,
   });
 
-  // Viewport / Mobile-friendly
   const hasViewport = htmlLower.includes('name="viewport"') || htmlLower.includes("name='viewport'");
   checks.push({
     id: "mobile_friendly",
@@ -1055,12 +1175,9 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     description: hasViewport
       ? "Your site has a viewport meta tag, indicating mobile-responsive design."
       : "No viewport meta tag found. Google prioritizes mobile-friendly stores.",
-    fix: !hasViewport
-      ? "Ensure your theme includes a viewport meta tag in the <head>."
-      : undefined,
+    fix: !hasViewport ? "Ensure your theme includes a viewport meta tag in the <head>." : undefined,
   });
 
-  // Title tag
   const titleMatch = homepageHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
   const hasTitle = titleMatch && titleMatch[1].trim().length > 0;
   checks.push({
@@ -1070,13 +1187,10 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     status: hasTitle ? "pass" : "fail",
     description: hasTitle
       ? `Page title found: "${titleMatch![1].trim().substring(0, 60)}"`
-      : "No page title was found. This is required for Google indexing.",
-    fix: !hasTitle
-      ? "Add a page title in Shopify: Online Store > Preferences > Homepage title."
-      : undefined,
+      : "No page title was found.",
+    fix: !hasTitle ? "Add a page title in Shopify: Online Store > Preferences > Homepage title." : undefined,
   });
 
-  // Structured data
   const hasProductJsonLd = htmlLower.includes('"@type"') && (htmlLower.includes('"product"') || htmlLower.includes("'product'"));
   const hasAnyJsonLd = htmlLower.includes("application/ld+json");
   checks.push({
@@ -1087,14 +1201,11 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     description: hasProductJsonLd
       ? "Product structured data (JSON-LD) was detected on your homepage."
       : hasAnyJsonLd
-        ? "JSON-LD structured data was found but no Product schema detected on the homepage. Product pages may still have it."
-        : "No JSON-LD structured data was detected on the homepage. Product pages may still have it.",
-    fix: !hasProductJsonLd
-      ? "Ensure your product pages include JSON-LD structured data with @type Product. Most Shopify themes do this automatically."
-      : undefined,
+        ? "JSON-LD found but no Product schema on homepage. Product pages may still have it."
+        : "No JSON-LD structured data detected on the homepage.",
+    fix: !hasProductJsonLd ? "Ensure product pages include JSON-LD with @type Product." : undefined,
   });
 
-  // Favicon
   const hasFavicon = htmlLower.includes('rel="icon"') || htmlLower.includes("rel='icon'") || htmlLower.includes("rel=\"shortcut icon\"") || htmlLower.includes("favicon");
   checks.push({
     id: "favicon",
@@ -1103,10 +1214,8 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     status: hasFavicon ? "pass" : "warning",
     description: hasFavicon
       ? "A favicon was detected on your site."
-      : "No favicon detected. While not required, it adds professionalism and trust.",
-    fix: !hasFavicon
-      ? "Upload a favicon in Shopify: Online Store > Themes > Customize > Theme settings > Favicon."
-      : undefined,
+      : "No favicon detected.",
+    fix: !hasFavicon ? "Upload a favicon in Shopify: Themes > Customize > Theme settings > Favicon." : undefined,
   });
 
   return buildResult(url, checks, {
@@ -1114,10 +1223,11 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     wrongDomainLinks,
     emailMismatches,
     collectionIssues,
-    contactPresence,
     targetedCopy,
     shippingPolicyDetails,
     refundPolicyDetails,
+    contactPage404s,
+    policyContactChecks,
   });
 }
 
@@ -1128,10 +1238,11 @@ interface ScanExtras {
   wrongDomainLinks: WrongDomainLink[];
   emailMismatches: EmailMismatch[];
   collectionIssues: CollectionIssue[];
-  contactPresence: ContactPresence;
   targetedCopy: TargetedCopyItem[];
   shippingPolicyDetails: ShippingPolicyDetails | null;
   refundPolicyDetails: RefundPolicyDetails | null;
+  contactPage404s: ContactPageResult[];
+  policyContactChecks: PolicyContactCheck[];
 }
 
 function emptyExtras(): ScanExtras {
@@ -1140,20 +1251,15 @@ function emptyExtras(): ScanExtras {
     wrongDomainLinks: [],
     emailMismatches: [],
     collectionIssues: [],
-    contactPresence: {
-      email: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-      phone: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-      address: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-      supportHours: { found: false, inFooter: false, inContactPage: false, inPolicies: false },
-    },
     targetedCopy: [],
     shippingPolicyDetails: null,
     refundPolicyDetails: null,
+    contactPage404s: [],
+    policyContactChecks: [],
   };
 }
 
 function buildResult(url: string, checks: ScanCheck[], extras: ScanExtras): ScanResult {
-  // Only count pass/fail/warning for scoring (not info)
   const scorable = checks.filter((c) => c.status !== "info");
   const passed = scorable.filter((c) => c.status === "pass").length;
   const failed = checks.filter((c) => c.status === "fail").length;
