@@ -1,4 +1,4 @@
-import { scryptSync, randomBytes, createHmac, timingSafeEqual } from "crypto";
+import { randomBytes, createHmac, timingSafeEqual } from "crypto";
 
 // --- Cookie config ---
 export const COOKIE_NAME = "gmc_session";
@@ -7,19 +7,9 @@ const MAX_SCANS = 3;
 
 // --- Password verification ---
 export function verifyPassword(inputPassword: string): boolean {
-  const storedHash = process.env.ACCESS_PASSWORD_HASH;
-  if (!storedHash) return false;
-
-  const [salt, hash] = storedHash.split(":");
-  if (!salt || !hash) return false;
-
-  const inputHash = scryptSync(inputPassword, salt, 64).toString("hex");
-
-  const hashBuffer = Buffer.from(hash, "hex");
-  const inputBuffer = Buffer.from(inputHash, "hex");
-
-  if (hashBuffer.length !== inputBuffer.length) return false;
-  return timingSafeEqual(hashBuffer, inputBuffer);
+  const storedPassword = process.env.ACCESS_PASSWORD;
+  if (!storedPassword) return false;
+  return inputPassword === storedPassword;
 }
 
 // --- Session tokens (HMAC-signed) ---
