@@ -52,7 +52,9 @@ export interface ShippingPolicyDetails {
   found: boolean;
   currency: string | null;
   cost: string | null;
-  time: string | null;
+  processingTime: string | null;
+  transitTime: string | null;
+  totalDeliveryTime: string | null;
   countries: string | null;
   cutoffTime: string | null;
 }
@@ -609,7 +611,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     "klaviyo.com", "mailchimp.com", "omnisend.com",
     "w3.org", "schema.org", "gravatar.com",
     "hcaptcha.com", "recaptcha.net", "cloudflare.com", "cloudflareinsights.com",
-    "cookiesandyou.com",
+    "cookiesandyou.com", "europa.eu",
     "gorgias.com", "tidio.com", "zendesk.com", "intercom.com", "freshdesk.com",
   ];
 
@@ -1087,7 +1089,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   if (shippingRes && shippingRes.ok) {
     const shipText = getVisibleText(shippingRes.html);
 
-    shippingPolicyDetails = { found: true, currency: null, cost: null, time: null, countries: null, cutoffTime: null };
+    shippingPolicyDetails = { found: true, currency: null, cost: null, processingTime: null, transitTime: null, totalDeliveryTime: null, countries: null, cutoffTime: null };
 
     // Currency
     for (const cp of CURRENCY_PATTERNS) {
@@ -1105,22 +1107,39 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       shipText.match(/(?:[\$€£¥₹]\s*[\d,.]+)\s*(?:for\s+)?(?:standard|express|priority|overnight)\s+(?:shipping|delivery)/i);
     if (costMatch) shippingPolicyDetails.cost = costMatch[0].trim().substring(0, 100);
 
-    // Time
-    const timeMatch = shipText.match(/(\d+\s*[-–to]+\s*\d+\s*(?:business\s+)?(?:days?|weeks?|working\s+days?))/i) ||
-      shipText.match(/((?:within|approximately|about|up\s+to|typically|usually|estimated)\s+\d+\s*[-–]?\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
-      shipText.match(/(\d+\s*(?:business\s+)?(?:days?|weeks?))\s*(?:delivery|shipping|transit|processing|turnaround)/i) ||
-      shipText.match(/(?:delivery|shipping|transit|processing|handling)\s*(?:time|period|estimate)?\s*(?:is|are|of|:)?\s*(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
-      shipText.match(/(?:arrive|delivered|receive)\s*(?:within|in)\s*(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i);
-    if (timeMatch) shippingPolicyDetails.time = timeMatch[0].trim().substring(0, 100);
+    // Processing time (how long to pack/prepare before shipping)
+    const TIME_RE = /\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?|working\s+days?|hours?)/i;
+    const procTimeMatch =
+      shipText.match(new RegExp(`(?:processing|handling|preparation|fulfillment|dispatch)\\s*(?:time|period)?\\s*(?:is|are|of|:|-|–)?\\s*(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(?:orders?\\s+(?:are\\s+)?(?:processed|prepared|shipped|dispatched|fulfilled)\\s+(?:within|in))\\s*(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(${TIME_RE.source})\\s*(?:processing|handling|preparation|to\\s+(?:process|prepare|pack|ship|dispatch))`, "i"));
+    if (procTimeMatch) shippingPolicyDetails.processingTime = procTimeMatch[0].trim().substring(0, 120);
 
-    // Countries
-    const countriesMatch = shipText.match(/(?:ship(?:ping)?|deliver(?:y)?)\s*(?:to|within|available\s+in|across)\s*:?\s*([^.]{5,100})/i) ||
+    // Transit time (how long in transit from carrier)
+    const transitMatch =
+      shipText.match(new RegExp(`(?:transit|carrier|in-transit|shipping)\\s*(?:time|period)?\\s*(?:is|are|of|:|-|–)?\\s*(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(${TIME_RE.source})\\s*(?:transit|in-transit|in\\s+transit|via\\s+(?:USPS|UPS|FedEx|DHL))`, "i")) ||
+      shipText.match(new RegExp(`(?:standard|express|priority|economy|ground|overnight)\\s+(?:shipping|delivery)\\s*(?:takes?|:|-|–|is)?\\s*(${TIME_RE.source})`, "i"));
+    if (transitMatch) shippingPolicyDetails.transitTime = transitMatch[0].trim().substring(0, 120);
+
+    // Total delivery time (end-to-end: order placed to arrival)
+    const deliveryMatch =
+      shipText.match(new RegExp(`(?:total\\s+)?(?:delivery|estimated\\s+delivery|overall)\\s*(?:time|period|estimate)?\\s*(?:is|are|of|:|-|–)?\\s*(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(?:arrive|delivered|receive|expect\\s+(?:your|the)\\s+(?:order|package|shipment))\\s*(?:within|in)\\s*(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(?:within|approximately|about|up\\s+to|typically|usually|estimated)\\s+(${TIME_RE.source})`, "i")) ||
+      shipText.match(new RegExp(`(\\d+\\s*[-–to]+\\s*\\d+\\s*(?:business\\s+)?(?:days?|weeks?|working\\s+days?))`, "i"));
+    if (deliveryMatch) shippingPolicyDetails.totalDeliveryTime = deliveryMatch[0].trim().substring(0, 120);
+
+    // Countries / shipping destinations
+    const KNOWN_COUNTRIES = "United States|USA|US|Canada|United Kingdom|UK|Australia|Germany|France|Italy|Spain|Netherlands|Belgium|Sweden|Norway|Denmark|Finland|Ireland|Austria|Switzerland|New Zealand|Japan|South Korea|Mexico|Brazil|India|China|Singapore|Hong Kong|Taiwan|Philippines|Israel|South Africa|UAE|Saudi Arabia|Poland|Portugal|Czech Republic|Greece|Romania|Hungary|Croatia|Turkey|Colombia|Chile|Argentina|Peru|Thailand|Vietnam|Malaysia|Indonesia";
+    const countriesMatch =
+      shipText.match(/(?:ship(?:ping)?|deliver(?:y)?)\s*(?:to|within|available\s+in|across)\s*:?\s*([^.]{5,100})/i) ||
       shipText.match(/(?:we\s+(?:ship|deliver)\s+(?:to|within|across))\s*([^.]{5,100})/i) ||
       shipText.match(/(?:applicable|applies)\s+to\s+(?:all\s+)?orders\s+shipped\s+(?:within|to)\s+(?:the\s+)?([^.]{5,100})/i) ||
-      shipText.match(/orders\s+shipped\s+(?:within|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally)[^.]*/i) ||
-      shipText.match(/(?:available|shipping)\s+(?:in|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally|all\s+\d+\s+states)[^.]*/i) ||
-      shipText.match(/(?:shipping\s+(?:policy|locations?))\s+[\s\S]{0,40}?(?:within|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally)[^.]*/i) ||
-      shipText.match(/(?:currently\s+)?(?:ship|deliver|available)\s+(?:only\s+)?(?:to|in|within)\s+(?:the\s+)?([A-Z][^.]{3,80})/);
+      shipText.match(/(?:shipping\s+(?:destinations?|locations?|zones?|regions?))\s*(?::|\s)\s*([^.]{5,150})/i) ||
+      shipText.match(/(?:currently\s+)?(?:ship|deliver|available|offer(?:ing)?)\s+(?:only\s+)?(?:to|in|within)\s+(?:the\s+)?([A-Z][^.]{3,80})/i) ||
+      shipText.match(/(?:do\s+not|don'?t)\s+(?:offer\s+)?(?:international\s+shipping|ship\s+(?:outside|internationally))[^.]*/i) ||
+      shipText.match(new RegExp(`(?:${KNOWN_COUNTRIES})(?:\\s+(?:only|exclusively))?`, "i"));
     if (countriesMatch) shippingPolicyDetails.countries = countriesMatch[0].trim().substring(0, 200);
 
     // Cutoff
@@ -1129,15 +1148,17 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     if (cutoffMatch) shippingPolicyDetails.cutoffTime = cutoffMatch[0].trim().substring(0, 100);
 
     for (const sc of [
-      { key: "cost", label: "Shipping Cost", value: shippingPolicyDetails.cost },
-      { key: "time", label: "Shipping Time", value: shippingPolicyDetails.time },
-      { key: "countries", label: "Shipping Countries", value: shippingPolicyDetails.countries },
+      { key: "cost", label: "Shipping Cost", value: shippingPolicyDetails.cost, fix: "Add clear shipping cost info to /policies/shipping-policy (e.g., 'Free shipping' or '$5.99 flat rate')." },
+      { key: "processingTime", label: "Processing Time", value: shippingPolicyDetails.processingTime, fix: "Add how long it takes to process/pack orders (e.g., 'Orders are processed within 1-2 business days')." },
+      { key: "transitTime", label: "Transit Time", value: shippingPolicyDetails.transitTime, fix: "Add how long shipping takes in transit (e.g., 'Standard shipping: 5-7 business days')." },
+      { key: "totalDeliveryTime", label: "Total Delivery Time", value: shippingPolicyDetails.totalDeliveryTime, fix: "Add total estimated delivery time (e.g., 'Estimated delivery: 7-10 business days')." },
+      { key: "countries", label: "Shipping Destinations", value: shippingPolicyDetails.countries, fix: "Add where you ship to (e.g., 'We currently ship within the United States only')." },
     ]) {
       checks.push({
         id: `shipping_${sc.key}`, category: "Shipping Policy", name: sc.label,
         status: sc.value ? "pass" : "fail",
         description: sc.value ? `Detected: ${sc.value}` : `Could not detect ${sc.label.toLowerCase()} in your shipping policy.`,
-        fix: !sc.value ? `Add clear ${sc.label.toLowerCase()} info to /policies/shipping-policy.` : undefined,
+        fix: !sc.value ? sc.fix : undefined,
       });
     }
     if (shippingPolicyDetails.currency) {
@@ -1183,13 +1204,14 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       refundText.match(/(?:shipping\s+cost|return\s+cost)[\s\S]{0,50}?(?:responsible|customer|buyer|you|your|free|paid|our)/i);
     if (returnShipMatch) refundPolicyDetails.returnShipping = returnShipMatch[0].trim().substring(0, 150);
 
-    // Processing time — ultra-broad
+    // Processing time — ultra-broad (also catches simple "30 Day Refund Policy" patterns)
     const procMatch =
       refundText.match(/(?:refund|credit|reimburs(?:e|ement)|payment)[\s\S]{0,80}?(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
       refundText.match(/(\d+\s*[-–to]+\s*\d+\s*(?:business\s+)?(?:days?|weeks?))\s*(?:to\s+)?(?:process|receive|issue|complete|appear)\s*(?:the\s+)?(?:refund|credit)/i) ||
       refundText.match(/(?:process(?:ed|ing)?|issued?|receive|applied?|appear|reflect)\s+(?:(?:your|the|a)\s+)?(?:refund|credit)\s+(?:within|in)\s+(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))/i) ||
       refundText.match(/(?:refund|credit)\s+(?:will\s+(?:be\s+)?)?(?:process(?:ed)?|appear|show|reflect|applied?)\s+(?:within|in)\s+(\d+[\s\S]{0,20}?(?:days?|weeks?))/i) ||
-      refundText.match(/(?:within|in)\s+(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))\s*(?:of\s+)?(?:receiving|approval|inspection)/i);
+      refundText.match(/(?:within|in)\s+(\d+\s*[-–to]*\s*\d*\s*(?:business\s+)?(?:days?|weeks?))\s*(?:of\s+)?(?:receiving|approval|inspection)/i) ||
+      refundText.match(/(\d+)\s*[-–]?\s*(?:day|business\s+day|calendar\s+day)s?\s*(?:refund|return|money[\s-]?back)/i);
     if (procMatch) refundPolicyDetails.processingTime = procMatch[0].trim().substring(0, 150);
 
     // Exchanges — ultra-broad

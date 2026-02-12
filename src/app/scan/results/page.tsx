@@ -296,8 +296,10 @@ export default function ResultsPage() {
           items={[
             { label: "Currency", value: result.shippingPolicyDetails.currency },
             { label: "Cost", value: result.shippingPolicyDetails.cost },
-            { label: "Delivery Time", value: result.shippingPolicyDetails.time },
-            { label: "Countries", value: result.shippingPolicyDetails.countries },
+            { label: "Processing Time", value: result.shippingPolicyDetails.processingTime },
+            { label: "Transit Time", value: result.shippingPolicyDetails.transitTime },
+            { label: "Total Delivery Time", value: result.shippingPolicyDetails.totalDeliveryTime },
+            { label: "Destinations", value: result.shippingPolicyDetails.countries },
             { label: "Order Cutoff", value: result.shippingPolicyDetails.cutoffTime },
           ]}
         />
