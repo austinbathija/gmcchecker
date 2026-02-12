@@ -104,11 +104,17 @@ export interface ScanResult {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalizeUrl(input: string): string {
-  let url = input.trim();
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "https://" + url;
+  let raw = input.trim();
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    raw = "https://" + raw;
   }
-  return url.replace(/\/+$/, "");
+  try {
+    const parsed = new URL(raw);
+    // Always strip path — we only want the origin (scheme + host)
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
 }
 
 function getDomain(url: string): string {
@@ -119,10 +125,16 @@ function getDomain(url: string): string {
   }
 }
 
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 async function fetchPage(url: string): Promise<{ ok: boolean; status: number; html: string }> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "GMCScout/1.0" },
+      headers: {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
       redirect: "follow",
       signal: AbortSignal.timeout(15000),
     });
@@ -131,6 +143,22 @@ async function fetchPage(url: string): Promise<{ ok: boolean; status: number; ht
   } catch {
     return { ok: false, status: 0, html: "" };
   }
+}
+
+/** Detect soft-404 pages — checks visible text only (scripts stripped) */
+function isSoft404(html: string): boolean {
+  const $ = cheerio.load(html);
+  $("script, style, noscript, svg").remove();
+  const visibleText = $("body").text().substring(0, 2000).toLowerCase();
+  return (
+    (visibleText.includes("page not found") && !visibleText.includes("contact")) ||
+    visibleText.includes("404 not found") ||
+    visibleText.includes("page you requested does not exist") ||
+    visibleText.includes("this page isn\u2019t available") ||
+    visibleText.includes("this page isn't available") ||
+    visibleText.includes("page doesn\u2019t exist") ||
+    visibleText.includes("page doesn't exist")
+  );
 }
 
 /** Extract emails from HTML — checks both raw text and mailto: links */
@@ -295,7 +323,11 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   let homepageFetchOk = false;
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "GMCScout/1.0" },
+      headers: {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
       redirect: "follow",
       signal: AbortSignal.timeout(15000),
     });
@@ -417,8 +449,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     const r = fetchResults[key];
     if (!r) continue;
 
-    const is404 = !r.ok || r.status === 404 ||
-      (r.html.toLowerCase().includes("page not found") && !r.html.toLowerCase().includes("<form"));
+    const is404 = !r.ok || r.status === 404 || isSoft404(r.html);
 
     contactPage404s.push({ path: cp, url: `${url}${cp}`, is404 });
 
@@ -461,7 +492,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   for (const rp of policyPages) {
     const key = `required:${rp.name}`;
     const r = fetchResults[key];
-    const pageOk = r && r.ok && !r.html.toLowerCase().includes("page not found");
+    const pageOk = r && r.ok && !isSoft404(r.html);
     const linkedInHomepage = rp.patterns.some((p) => htmlLower.includes(p));
 
     if (pageOk && linkedInHomepage) {
@@ -561,7 +592,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   // Add first working contact page
   for (const cp of contactPaths) {
     const r = fetchResults[`contact:${cp}`];
-    if (r && r.ok && !(r.html.toLowerCase().includes("page not found"))) {
+    if (r && r.ok && !isSoft404(r.html)) {
       pagesToScanForLinks.push({ html: r.html, pageType: "Other", foundOn: `${url}${cp}` });
       break;
     }
