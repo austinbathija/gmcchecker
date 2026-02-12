@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scanStore } from "@/lib/scanner";
 
+export const maxDuration = 60; // Allow up to 60 seconds for the deep scan
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();

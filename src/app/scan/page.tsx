@@ -102,22 +102,23 @@ export default function ScanPage() {
 
             {loading && (
               <div className="mt-8 animate-fade-in">
-                <div className="flex items-center gap-3 text-sm text-muted">
-                  <div className="h-2 w-2 rounded-full bg-primary animate-pulse-dot" />
-                  Checking SSL certificate...
-                </div>
-                <div className="mt-2 flex items-center gap-3 text-sm text-muted">
-                  <div className="h-2 w-2 rounded-full bg-primary animate-pulse-dot" style={{ animationDelay: "0.3s" }} />
-                  Scanning for policy pages...
-                </div>
-                <div className="mt-2 flex items-center gap-3 text-sm text-muted">
-                  <div className="h-2 w-2 rounded-full bg-primary animate-pulse-dot" style={{ animationDelay: "0.6s" }} />
-                  Checking contact information...
-                </div>
-                <div className="mt-2 flex items-center gap-3 text-sm text-muted">
-                  <div className="h-2 w-2 rounded-full bg-primary animate-pulse-dot" style={{ animationDelay: "0.9s" }} />
-                  Analyzing product data...
-                </div>
+                {[
+                  "Checking SSL & site reachability...",
+                  "Crawling contact pages...",
+                  "Scanning required pages (Terms, Privacy, Shipping, Refund, FAQ)...",
+                  "Checking for wrong domain links...",
+                  "Detecting email domain mismatches...",
+                  "Analyzing collections...",
+                  "Extracting store intelligence...",
+                  "Scanning shipping & refund policies...",
+                  "Checking for targeted copy...",
+                  "Validating contact info & address format...",
+                ].map((text, i) => (
+                  <div key={i} className="mt-2 flex items-center gap-3 text-sm text-muted">
+                    <div className="h-2 w-2 rounded-full bg-primary animate-pulse-dot" style={{ animationDelay: `${i * 0.2}s` }} />
+                    {text}
+                  </div>
+                ))}
               </div>
             )}
           </div>
