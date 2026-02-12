@@ -167,6 +167,29 @@ function isSoft404(html: string): boolean {
   );
 }
 
+/** Find footer HTML using multiple selectors — Shopify themes vary */
+function getFooterHtml($: cheerio.CheerioAPI): string {
+  // Try semantic <footer> first, then class/id-based selectors
+  const selectors = [
+    "footer",
+    "[class*='footer' i]",
+    "#footer",
+    "#site-footer",
+    "#shopify-section-footer",
+    "[data-section-type='footer']",
+    "[class*='site-footer' i]",
+    "[class*='page-footer' i]",
+  ];
+  for (const sel of selectors) {
+    const el = $(sel);
+    if (el.length > 0) {
+      const html = el.html();
+      if (html && html.trim().length > 50) return html;
+    }
+  }
+  return "";
+}
+
 /** Extract emails from HTML — checks both raw text and mailto: links */
 function extractEmails(html: string): string[] {
   const results = new Set<string>();
@@ -181,7 +204,7 @@ function extractEmails(html: string): string[] {
 
   // From visible text (strip scripts first)
   $el("script, style, noscript, svg").remove();
-  const visibleHtml = $el("body").html() || "";
+  const visibleHtml = $el("body").html() || $el.html() || "";
   const pattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const matches = visibleHtml.match(pattern) || [];
   for (const e of matches) {
@@ -201,8 +224,9 @@ function extractEmails(html: string): string[] {
   return [...results];
 }
 
-/** Extract phone numbers — strict patterns only, plus tel: links */
-function extractPhones($el: cheerio.CheerioAPI): string[] {
+/** Extract phone numbers from an HTML string — tel: links + regex patterns */
+function extractPhonesFromString(html: string): string[] {
+  const $el = cheerio.load(html);
   const results = new Set<string>();
 
   // From tel: links (most reliable)
@@ -213,9 +237,8 @@ function extractPhones($el: cheerio.CheerioAPI): string[] {
   });
 
   // From visible text — strict phone patterns only
-  const $clone = $el("footer").clone();
-  $clone.find("script, style, noscript, svg").remove();
-  const text = $clone.text();
+  $el("script, style, noscript, svg").remove();
+  const text = $el("body").text() || $el.text();
 
   // Match specific phone formats:
   // +1 (555) 123-4567, (555) 123-4567, 555-123-4567, +44 20 1234 5678
@@ -239,10 +262,9 @@ function extractPhones($el: cheerio.CheerioAPI): string[] {
   return [...results];
 }
 
-/** Extract phone numbers from any HTML string */
+/** Extract phone numbers from any HTML string (alias) */
 function extractPhonesFromHtml(html: string): string[] {
-  const $ = cheerio.load(html);
-  return extractPhones($);
+  return extractPhonesFromString(html);
 }
 
 /** Strip scripts/styles from HTML and return visible text */
@@ -893,16 +915,14 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // 11. Footer Requirements — ONLY checks the <footer> element
+  // 11. Footer Requirements — uses broad selector to find footer content
   // ────────────────────────────────────────────────────────────────────────
-  const footerHtml = $("footer").html() || "";
+  const footerHtml = getFooterHtml($);
   const footerEmails = extractEmails(footerHtml);
-  const footerPhones = extractPhones($);
+  const footerPhones = extractPhonesFromString(footerHtml);
   const footerHasAddress = hasAddress(footerHtml);
 
-  const $footerClone = $("footer").clone();
-  $footerClone.find("script, style, noscript, svg").remove();
-  const footerText = $footerClone.text().replace(/\s+/g, " ").trim();
+  const footerText = getVisibleText(footerHtml);
 
   checks.push({
     id: "footer_email", category: "Footer Requirements", name: "Email in Footer",
