@@ -397,6 +397,7 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   const contactPaths = [
     "/contact",
     "/pages/contact-us",
+    "/pages/contactus",
     "/pages/get-in-touch",
     "/contact-us",
     "/get-in-touch",
@@ -456,6 +457,13 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     if (!is404 && !workingContactPagePath) {
       workingContactPagePath = cp;
     }
+  }
+
+  // Get the working contact page HTML for later checks
+  let contactPageHtml = "";
+  if (workingContactPagePath) {
+    const r = fetchResults[`contact:${workingContactPagePath}`];
+    if (r && r.ok) contactPageHtml = r.html;
   }
 
   checks.push({
@@ -879,46 +887,78 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // 11. Footer Requirements
+  // 11. Footer & Contact Page Requirements
   // ────────────────────────────────────────────────────────────────────────
   const footerHtml = $("footer").html() || "";
-  const footerEmails = extractEmails(footerHtml);
-  const footerPhones = extractPhones($);
-  const footerHasAddress = hasAddress(footerHtml);
 
-  // Footer visible text for hours
+  // Check BOTH footer and contact page for required contact info
+  const footerEmails = extractEmails(footerHtml);
+  const contactEmails = contactPageHtml ? extractEmails(contactPageHtml) : [];
+  const allFoundEmails = [...new Set([...footerEmails, ...contactEmails])];
+
+  const footerPhones = extractPhones($);
+  const contactPhones = contactPageHtml ? extractPhonesFromHtml(contactPageHtml) : [];
+  const allFoundPhones = [...new Set([...footerPhones, ...contactPhones])];
+
+  const footerHasAddress = hasAddress(footerHtml);
+  const contactHasAddress = contactPageHtml ? hasAddress(contactPageHtml) : false;
+  const anyAddress = footerHasAddress || contactHasAddress;
+
+  // Footer + contact visible text for hours & response time
   const $footerClone = $("footer").clone();
   $footerClone.find("script, style, noscript, svg").remove();
   const footerText = $footerClone.text().replace(/\s+/g, " ").trim();
+  const contactText = contactPageHtml ? getVisibleText(contactPageHtml) : "";
+  const combinedText = footerText + " " + contactText;
 
+  const emailSource = footerEmails.length > 0 ? "footer" : "contact page";
   checks.push({
-    id: "footer_email", category: "Footer Requirements", name: "Email in Footer",
-    status: footerEmails.length > 0 ? "pass" : "fail",
-    description: footerEmails.length > 0 ? `Email found in footer: ${footerEmails[0]}` : "No email address found in the footer.",
-    fix: footerEmails.length === 0 ? "Add your business email address to your site footer." : undefined,
+    id: "footer_email", category: "Footer Requirements", name: "Email Found",
+    status: allFoundEmails.length > 0 ? "pass" : "fail",
+    description: allFoundEmails.length > 0 ? `Email found in ${emailSource}: ${allFoundEmails[0]}` : "No email address found in footer or contact page.",
+    fix: allFoundEmails.length === 0 ? "Add your business email address to your site footer or contact page." : undefined,
   });
 
+  const phoneSource = footerPhones.length > 0 ? "footer" : "contact page";
   checks.push({
-    id: "footer_phone", category: "Footer Requirements", name: "Phone in Footer",
-    status: footerPhones.length > 0 ? "pass" : "fail",
-    description: footerPhones.length > 0 ? `Phone number found in footer: ${footerPhones[0]}` : "No phone number found in the footer.",
-    fix: footerPhones.length === 0 ? "Add your business phone number to your site footer." : undefined,
+    id: "footer_phone", category: "Footer Requirements", name: "Phone Number Found",
+    status: allFoundPhones.length > 0 ? "pass" : "fail",
+    description: allFoundPhones.length > 0 ? `Phone number found in ${phoneSource}: ${allFoundPhones[0]}` : "No phone number found in footer or contact page.",
+    fix: allFoundPhones.length === 0 ? "Add your business phone number to your site footer or contact page." : undefined,
   });
 
+  const addrSource = footerHasAddress ? "footer" : "contact page";
   checks.push({
-    id: "footer_address", category: "Footer Requirements", name: "Physical Address in Footer",
-    status: footerHasAddress ? "pass" : "fail",
-    description: footerHasAddress ? "A physical address was found in the footer." : "No physical address found in the footer.",
-    fix: !footerHasAddress ? "Add your business address to your footer (e.g., 123 Main Street, City, State, 12345, Country)." : undefined,
+    id: "footer_address", category: "Footer Requirements", name: "Physical Address Found",
+    status: anyAddress ? "pass" : "fail",
+    description: anyAddress ? `A physical address was found in the ${addrSource}.` : "No physical address found in footer or contact page.",
+    fix: !anyAddress ? "Add your business address to your footer or contact page (e.g., 123 Main Street, City, State, 12345, Country)." : undefined,
   });
 
   // Support hours — includes "Customer Service Hours" pattern
-  const hoursRegex = /(?:customer\s+service\s+hours|hours|support hours|business hours|opening hours|service\s+hours|open\s+\d|mon(?:day)?[\s\-–]+(?:fri|sat|sun)|(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)))/i;
+  const hoursRegex = /(?:customer\s+service\s+hours|hours\s*of\s*operation|hours|support hours|business hours|opening hours|service\s+hours|open\s+\d|mon(?:day)?[\s\-–]+(?:fri|sat|sun)|(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)))/i;
+  const hoursInFooter = hoursRegex.test(footerText);
+  const hoursInContact = hoursRegex.test(contactText);
+  const hoursSource = hoursInFooter ? "footer" : "contact page";
   checks.push({
-    id: "footer_hours", category: "Footer Requirements", name: "Support Hours in Footer",
-    status: hoursRegex.test(footerText) ? "pass" : "fail",
-    description: hoursRegex.test(footerText) ? "Support/business hours found in the footer." : "No support hours found in the footer.",
-    fix: !hoursRegex.test(footerText) ? "Add your Customer Service Hours to the footer (e.g., Mon-Fri 9am-5pm EST)." : undefined,
+    id: "footer_hours", category: "Footer Requirements", name: "Support Hours Found",
+    status: (hoursInFooter || hoursInContact) ? "pass" : "fail",
+    description: (hoursInFooter || hoursInContact) ? `Support/business hours found in the ${hoursSource}.` : "No support hours found in footer or contact page.",
+    fix: !(hoursInFooter || hoursInContact) ? "Add your Customer Service Hours to the footer or contact page (e.g., Mon-Fri 9am-5pm EST)." : undefined,
+  });
+
+  // Response time / "we will get back to you" — check footer + contact page
+  const responseRegex = /(?:get\s+back\s+to\s+you|respond\s+(?:to\s+you\s+)?within|reply\s+within|response\s+time|typically\s+respond|aim\s+to\s+respond|we\s+will\s+respond|expect\s+a\s+(?:response|reply)|(?:within|in)\s+\d+\s*[-–]?\s*\d*\s*(?:hours?|business\s+days?|minutes?))/i;
+  const responseInFooter = responseRegex.test(footerText);
+  const responseInContact = responseRegex.test(contactText);
+  const responseSource = responseInFooter ? "footer" : "contact page";
+  checks.push({
+    id: "response_time", category: "Footer Requirements", name: "Response Time Promise",
+    status: (responseInFooter || responseInContact) ? "pass" : "fail",
+    description: (responseInFooter || responseInContact)
+      ? `Response time commitment found in the ${responseSource}.`
+      : "No response time promise found (e.g., 'We will get back to you within 24 hours').",
+    fix: !(responseInFooter || responseInContact) ? "Add a response time promise to your contact page or footer (e.g., 'We will get back to you within 24 hours')." : undefined,
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1022,7 +1062,10 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     // Countries
     const countriesMatch = shipText.match(/(?:ship(?:ping)?|deliver(?:y)?)\s*(?:to|within|available\s+in|across)\s*:?\s*([^.]{5,100})/i) ||
       shipText.match(/(?:we\s+(?:ship|deliver)\s+(?:to|within|across))\s*([^.]{5,100})/i) ||
+      shipText.match(/(?:applicable|applies)\s+to\s+(?:all\s+)?orders\s+shipped\s+(?:within|to)\s+(?:the\s+)?([^.]{5,100})/i) ||
+      shipText.match(/orders\s+shipped\s+(?:within|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally)[^.]*/i) ||
       shipText.match(/(?:available|shipping)\s+(?:in|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally|all\s+\d+\s+states)[^.]*/i) ||
+      shipText.match(/(?:shipping\s+(?:policy|locations?))\s+[\s\S]{0,40}?(?:within|to)\s+(?:the\s+)?(United States|USA|US|Canada|UK|worldwide|internationally)[^.]*/i) ||
       shipText.match(/(?:currently\s+)?(?:ship|deliver|available)\s+(?:only\s+)?(?:to|in|within)\s+(?:the\s+)?([A-Z][^.]{3,80})/);
     if (countriesMatch) shippingPolicyDetails.countries = countriesMatch[0].trim().substring(0, 200);
 
@@ -1195,14 +1238,6 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     status: hasTitle ? "pass" : "fail",
     description: hasTitle ? `Page title: "${titleMatch![1].trim().substring(0, 60)}"` : "No page title found.",
     fix: !hasTitle ? "Add a page title in Shopify: Online Store > Preferences." : undefined,
-  });
-
-  const hasProductJsonLd = htmlLower.includes('"@type"') && (htmlLower.includes('"product"') || htmlLower.includes("'product'"));
-  checks.push({
-    id: "structured_data", category: "Product Data", name: "Structured Data (JSON-LD)",
-    status: hasProductJsonLd ? "pass" : "fail",
-    description: hasProductJsonLd ? "Product structured data (JSON-LD) detected." : "No Product JSON-LD detected on homepage.",
-    fix: !hasProductJsonLd ? "Ensure product pages include JSON-LD with @type Product." : undefined,
   });
 
   const hasFavicon = htmlLower.includes('rel="icon"') || htmlLower.includes("rel='icon'") || htmlLower.includes("shortcut icon") || htmlLower.includes("favicon");
