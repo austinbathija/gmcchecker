@@ -3,6 +3,7 @@ import { scryptSync, randomBytes, createHmac, timingSafeEqual } from "crypto";
 // --- Cookie config ---
 export const COOKIE_NAME = "gmc_session";
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days in seconds
+const MAX_SCANS = 3;
 
 // --- Password verification ---
 export function verifyPassword(inputPassword: string): boolean {
@@ -62,41 +63,47 @@ export function verifySessionToken(token: string): boolean {
 }
 
 // --- Cookie helpers ---
+const isProduction = process.env.NODE_ENV === "production";
+
 export function buildSessionCookie(token: string): string {
-  return `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE}`;
+  const secure = isProduction ? " Secure;" : "";
+  return `${COOKIE_NAME}=${token}; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE}`;
 }
 
 export function buildClearCookie(): string {
-  return `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`;
+  const secure = isProduction ? " Secure;" : "";
+  return `${COOKIE_NAME}=; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=0`;
 }
 
-// --- IP-based attempt tracking ---
-const failedAttempts = new Map<
-  string,
-  { count: number; lastAttempt: number }
->();
-const MAX_ATTEMPTS = 3;
+// --- Scan usage tracking (per session) ---
+const scanCounts = new Map<string, number>();
 
-export function isLockedOut(ip: string): boolean {
-  const record = failedAttempts.get(ip);
-  if (!record) return false;
-  return record.count >= MAX_ATTEMPTS;
+export function recordScan(token: string): {
+  allowed: boolean;
+  scansUsed: number;
+  scansRemaining: number;
+} {
+  const current = scanCounts.get(token) || 0;
+
+  if (current >= MAX_SCANS) {
+    return { allowed: false, scansUsed: current, scansRemaining: 0 };
+  }
+
+  const newCount = current + 1;
+  scanCounts.set(token, newCount);
+
+  return {
+    allowed: true,
+    scansUsed: newCount,
+    scansRemaining: MAX_SCANS - newCount,
+  };
 }
 
-export function recordFailedAttempt(ip: string): number {
-  const record = failedAttempts.get(ip) || { count: 0, lastAttempt: 0 };
-  record.count += 1;
-  record.lastAttempt = Date.now();
-  failedAttempts.set(ip, record);
-  return MAX_ATTEMPTS - record.count; // remaining attempts
+export function getScansRemaining(token: string): number {
+  const current = scanCounts.get(token) || 0;
+  return Math.max(0, MAX_SCANS - current);
 }
 
-export function clearFailedAttempts(ip: string): void {
-  failedAttempts.delete(ip);
-}
-
-export function getRemainingAttempts(ip: string): number {
-  const record = failedAttempts.get(ip);
-  if (!record) return MAX_ATTEMPTS;
-  return Math.max(0, MAX_ATTEMPTS - record.count);
+export function clearScanCount(token: string): void {
+  scanCounts.delete(token);
 }

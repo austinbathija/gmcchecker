@@ -30,6 +30,11 @@ export default function ScanPage() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (data.loggedOut) {
+          // Session expired or scan limit reached — redirect to login
+          router.push("/login");
+          return;
+        }
         setError(data.error || "Scan failed. Please try again.");
         setLoading(false);
         return;

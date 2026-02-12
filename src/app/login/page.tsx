@@ -9,14 +9,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [locked, setLocked] = useState(false);
-  const [remainingAttempts, setRemainingAttempts] = useState<number | null>(
-    null
-  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (locked) return;
     if (!password.trim()) {
       setError("Please enter the access password.");
       return;
@@ -39,10 +34,6 @@ export default function LoginPage() {
       }
 
       setError(data.error || "Authentication failed.");
-      if (data.locked) setLocked(true);
-      if (typeof data.remainingAttempts === "number") {
-        setRemainingAttempts(data.remainingAttempts);
-      }
     } catch {
       setError("Network error. Please check your connection.");
     } finally {
@@ -83,17 +74,8 @@ export default function LoginPage() {
 
         <div className="rounded-xl border border-border bg-white p-8 shadow-sm">
           {error && (
-            <div
-              className={`mb-4 rounded-lg p-3 text-sm ${locked ? "bg-red-100 text-red-800" : "bg-red-50 text-red-600"}`}
-            >
+            <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
               {error}
-            </div>
-          )}
-
-          {remainingAttempts !== null && !locked && (
-            <div className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-700">
-              {remainingAttempts} attempt
-              {remainingAttempts !== 1 ? "s" : ""} remaining
             </div>
           )}
 
@@ -112,20 +94,16 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-1 block w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-foreground placeholder:text-muted focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                 placeholder="Enter your access password"
-                disabled={locked || loading}
+                disabled={loading}
                 autoFocus
               />
             </div>
             <button
               type="submit"
-              disabled={locked || loading}
+              disabled={loading}
               className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading
-                ? "Verifying..."
-                : locked
-                  ? "Access Locked"
-                  : "Access Tool"}
+              {loading ? "Verifying..." : "Access Tool"}
             </button>
           </form>
         </div>

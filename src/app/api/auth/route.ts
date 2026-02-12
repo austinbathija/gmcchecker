@@ -4,36 +4,12 @@ import {
   createSessionToken,
   buildSessionCookie,
   buildClearCookie,
-  isLockedOut,
-  recordFailedAttempt,
-  clearFailedAttempts,
+  COOKIE_NAME,
+  clearScanCount,
 } from "@/lib/auth";
-
-function getClientIp(request: NextRequest): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
-
-  const realIp = request.headers.get("x-real-ip");
-  if (realIp) return realIp;
-
-  return "unknown";
-}
 
 // POST /api/auth — Login
 export async function POST(request: NextRequest) {
-  const ip = getClientIp(request);
-
-  if (isLockedOut(ip)) {
-    return NextResponse.json(
-      {
-        error: "Too many failed attempts. Access has been locked.",
-        locked: true,
-        remainingAttempts: 0,
-      },
-      { status: 429 }
-    );
-  }
-
   let body: { password?: string };
   try {
     body = await request.json();
@@ -55,23 +31,13 @@ export async function POST(request: NextRequest) {
   const isValid = verifyPassword(password);
 
   if (!isValid) {
-    const remaining = recordFailedAttempt(ip);
-    const locked = remaining <= 0;
-
     return NextResponse.json(
-      {
-        error: locked
-          ? "Too many failed attempts. Access has been locked."
-          : "Incorrect password.",
-        locked,
-        remainingAttempts: Math.max(0, remaining),
-      },
-      { status: locked ? 429 : 401 }
+      { error: "Incorrect password. Please try again." },
+      { status: 401 }
     );
   }
 
   // Password correct — create session
-  clearFailedAttempts(ip);
   const token = createSessionToken();
   const response = NextResponse.json({ success: true });
   response.headers.set("Set-Cookie", buildSessionCookie(token));
@@ -80,7 +46,13 @@ export async function POST(request: NextRequest) {
 }
 
 // DELETE /api/auth — Logout
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  // Clean up scan count for this session
+  const sessionCookie = request.cookies.get(COOKIE_NAME);
+  if (sessionCookie?.value) {
+    clearScanCount(sessionCookie.value);
+  }
+
   const response = NextResponse.json({ success: true });
   response.headers.set("Set-Cookie", buildClearCookie());
   return response;
