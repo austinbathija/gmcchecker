@@ -128,21 +128,27 @@ function getDomain(url: string): string {
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 async function fetchPage(url: string): Promise<{ ok: boolean; status: number; html: string }> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": BROWSER_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(15000),
-    });
-    const html = await res.text();
-    return { ok: res.ok, status: res.status, html };
-  } catch {
-    return { ok: false, status: 0, html: "" };
+  const headers = {
+    "User-Agent": BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers,
+        redirect: "follow",
+        signal: AbortSignal.timeout(15000),
+      });
+      const html = await res.text();
+      return { ok: res.ok, status: res.status, html };
+    } catch {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
   }
+  return { ok: false, status: 0, html: "" };
 }
 
 /** Detect soft-404 pages — checks visible text only (scripts stripped) */
@@ -887,79 +893,94 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // 11. Footer & Contact Page Requirements
+  // 11. Footer Requirements — ONLY checks the <footer> element
   // ────────────────────────────────────────────────────────────────────────
   const footerHtml = $("footer").html() || "";
-
-  // Check BOTH footer and contact page for required contact info
   const footerEmails = extractEmails(footerHtml);
-  const contactEmails = contactPageHtml ? extractEmails(contactPageHtml) : [];
-  const allFoundEmails = [...new Set([...footerEmails, ...contactEmails])];
-
   const footerPhones = extractPhones($);
-  const contactPhones = contactPageHtml ? extractPhonesFromHtml(contactPageHtml) : [];
-  const allFoundPhones = [...new Set([...footerPhones, ...contactPhones])];
-
   const footerHasAddress = hasAddress(footerHtml);
-  const contactHasAddress = contactPageHtml ? hasAddress(contactPageHtml) : false;
-  const anyAddress = footerHasAddress || contactHasAddress;
 
-  // Footer + contact visible text for hours & response time
   const $footerClone = $("footer").clone();
   $footerClone.find("script, style, noscript, svg").remove();
   const footerText = $footerClone.text().replace(/\s+/g, " ").trim();
-  const contactText = contactPageHtml ? getVisibleText(contactPageHtml) : "";
-  const combinedText = footerText + " " + contactText;
 
-  const emailSource = footerEmails.length > 0 ? "footer" : "contact page";
   checks.push({
-    id: "footer_email", category: "Footer Requirements", name: "Email Found",
-    status: allFoundEmails.length > 0 ? "pass" : "fail",
-    description: allFoundEmails.length > 0 ? `Email found in ${emailSource}: ${allFoundEmails[0]}` : "No email address found in footer or contact page.",
-    fix: allFoundEmails.length === 0 ? "Add your business email address to your site footer or contact page." : undefined,
+    id: "footer_email", category: "Footer Requirements", name: "Email in Footer",
+    status: footerEmails.length > 0 ? "pass" : "fail",
+    description: footerEmails.length > 0 ? `Email found in footer: ${footerEmails[0]}` : "No email address found in the footer.",
+    fix: footerEmails.length === 0 ? "Add your business email address to your site footer." : undefined,
   });
 
-  const phoneSource = footerPhones.length > 0 ? "footer" : "contact page";
   checks.push({
-    id: "footer_phone", category: "Footer Requirements", name: "Phone Number Found",
-    status: allFoundPhones.length > 0 ? "pass" : "fail",
-    description: allFoundPhones.length > 0 ? `Phone number found in ${phoneSource}: ${allFoundPhones[0]}` : "No phone number found in footer or contact page.",
-    fix: allFoundPhones.length === 0 ? "Add your business phone number to your site footer or contact page." : undefined,
+    id: "footer_phone", category: "Footer Requirements", name: "Phone in Footer",
+    status: footerPhones.length > 0 ? "pass" : "fail",
+    description: footerPhones.length > 0 ? `Phone number found in footer: ${footerPhones[0]}` : "No phone number found in the footer.",
+    fix: footerPhones.length === 0 ? "Add your business phone number to your site footer." : undefined,
   });
 
-  const addrSource = footerHasAddress ? "footer" : "contact page";
   checks.push({
-    id: "footer_address", category: "Footer Requirements", name: "Physical Address Found",
-    status: anyAddress ? "pass" : "fail",
-    description: anyAddress ? `A physical address was found in the ${addrSource}.` : "No physical address found in footer or contact page.",
-    fix: !anyAddress ? "Add your business address to your footer or contact page (e.g., 123 Main Street, City, State, 12345, Country)." : undefined,
+    id: "footer_address", category: "Footer Requirements", name: "Physical Address in Footer",
+    status: footerHasAddress ? "pass" : "fail",
+    description: footerHasAddress ? "A physical address was found in the footer." : "No physical address found in the footer.",
+    fix: !footerHasAddress ? "Add your business address to your footer (e.g., 123 Main Street, City, State, 12345, Country)." : undefined,
   });
 
-  // Support hours — includes "Customer Service Hours" pattern
   const hoursRegex = /(?:customer\s+service\s+hours|hours\s*of\s*operation|hours|support hours|business hours|opening hours|service\s+hours|open\s+\d|mon(?:day)?[\s\-–]+(?:fri|sat|sun)|(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)))/i;
-  const hoursInFooter = hoursRegex.test(footerText);
-  const hoursInContact = hoursRegex.test(contactText);
-  const hoursSource = hoursInFooter ? "footer" : "contact page";
   checks.push({
-    id: "footer_hours", category: "Footer Requirements", name: "Support Hours Found",
-    status: (hoursInFooter || hoursInContact) ? "pass" : "fail",
-    description: (hoursInFooter || hoursInContact) ? `Support/business hours found in the ${hoursSource}.` : "No support hours found in footer or contact page.",
-    fix: !(hoursInFooter || hoursInContact) ? "Add your Customer Service Hours to the footer or contact page (e.g., Mon-Fri 9am-5pm EST)." : undefined,
+    id: "footer_hours", category: "Footer Requirements", name: "Support Hours in Footer",
+    status: hoursRegex.test(footerText) ? "pass" : "fail",
+    description: hoursRegex.test(footerText) ? "Support/business hours found in the footer." : "No support hours found in the footer.",
+    fix: !hoursRegex.test(footerText) ? "Add your Customer Service Hours to the footer (e.g., Mon-Fri 9am-5pm EST)." : undefined,
   });
 
-  // Response time / "we will get back to you" — check footer + contact page
-  const responseRegex = /(?:get\s+back\s+to\s+you|respond\s+(?:to\s+you\s+)?within|reply\s+within|response\s+time|typically\s+respond|aim\s+to\s+respond|we\s+will\s+respond|expect\s+a\s+(?:response|reply)|(?:within|in)\s+\d+\s*[-–]?\s*\d*\s*(?:hours?|business\s+days?|minutes?))/i;
-  const responseInFooter = responseRegex.test(footerText);
-  const responseInContact = responseRegex.test(contactText);
-  const responseSource = responseInFooter ? "footer" : "contact page";
-  checks.push({
-    id: "response_time", category: "Footer Requirements", name: "Response Time Promise",
-    status: (responseInFooter || responseInContact) ? "pass" : "fail",
-    description: (responseInFooter || responseInContact)
-      ? `Response time commitment found in the ${responseSource}.`
-      : "No response time promise found (e.g., 'We will get back to you within 24 hours').",
-    fix: !(responseInFooter || responseInContact) ? "Add a response time promise to your contact page or footer (e.g., 'We will get back to you within 24 hours')." : undefined,
-  });
+  // ────────────────────────────────────────────────────────────────────────
+  // 11b. Contact Page Content Checks
+  // ────────────────────────────────────────────────────────────────────────
+  if (contactPageHtml) {
+    const contactText = getVisibleText(contactPageHtml);
+    const contactEmails = extractEmails(contactPageHtml);
+    const contactPhones = extractPhonesFromHtml(contactPageHtml);
+    const contactHasAddr = hasAddress(contactPageHtml);
+
+    checks.push({
+      id: "contact_email", category: "Contact Page", name: "Email on Contact Page",
+      status: contactEmails.length > 0 ? "pass" : "fail",
+      description: contactEmails.length > 0 ? `Email found on contact page: ${contactEmails[0]}` : "No email address found on the contact page.",
+      fix: contactEmails.length === 0 ? "Add your business email address to your contact page." : undefined,
+    });
+
+    checks.push({
+      id: "contact_phone", category: "Contact Page", name: "Phone on Contact Page",
+      status: contactPhones.length > 0 ? "pass" : "fail",
+      description: contactPhones.length > 0 ? `Phone number found on contact page: ${contactPhones[0]}` : "No phone number found on the contact page.",
+      fix: contactPhones.length === 0 ? "Add your business phone number to your contact page." : undefined,
+    });
+
+    checks.push({
+      id: "contact_address", category: "Contact Page", name: "Address on Contact Page",
+      status: contactHasAddr ? "pass" : "fail",
+      description: contactHasAddr ? "A physical address was found on the contact page." : "No physical address found on the contact page.",
+      fix: !contactHasAddr ? "Add your business address to your contact page." : undefined,
+    });
+
+    const hoursInContact = hoursRegex.test(contactText);
+    checks.push({
+      id: "contact_hours", category: "Contact Page", name: "Support Hours on Contact Page",
+      status: hoursInContact ? "pass" : "fail",
+      description: hoursInContact ? "Support/business hours found on the contact page." : "No support hours found on the contact page.",
+      fix: !hoursInContact ? "Add your Customer Service Hours to the contact page (e.g., Mon-Fri 9am-5pm EST)." : undefined,
+    });
+
+    const responseRegex = /(?:get\s+back\s+to\s+you|respond\s+(?:to\s+you\s+)?within|reply\s+within|response\s+time|typically\s+respond|aim\s+to\s+respond|we\s+will\s+respond|expect\s+a\s+(?:response|reply)|(?:within|in)\s+\d+\s*[-–]?\s*\d*\s*(?:hours?|business\s+days?|minutes?))/i;
+    checks.push({
+      id: "contact_response_time", category: "Contact Page", name: "Response Time Promise",
+      status: responseRegex.test(contactText) ? "pass" : "fail",
+      description: responseRegex.test(contactText)
+        ? "Response time commitment found on the contact page."
+        : "No response time promise found (e.g., 'We will get back to you within 24 hours').",
+      fix: !responseRegex.test(contactText) ? "Add a response time promise to your contact page (e.g., 'We will get back to you within 24 hours')." : undefined,
+    });
+  }
 
   // ────────────────────────────────────────────────────────────────────────
   // 12. Policy Page Requirements — contact info in each policy
@@ -1156,18 +1177,39 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
       refundText.match(/restock/i);
     if (restockMatch) refundPolicyDetails.restockingFees = restockMatch[0].trim().substring(0, 100);
 
-    for (const rc of [
-      { key: "returnWindow", label: "Return Window", value: refundPolicyDetails.returnWindow },
-      { key: "returnShipping", label: "Return Shipping Policy", value: refundPolicyDetails.returnShipping },
-      { key: "processingTime", label: "Refund Processing Time", value: refundPolicyDetails.processingTime },
-      { key: "exchangesAllowed", label: "Exchanges Policy", value: refundPolicyDetails.exchangesAllowed },
-      { key: "restockingFees", label: "Restocking Fees", value: refundPolicyDetails.restockingFees },
-    ]) {
+    const refundChecks = [
+      {
+        key: "returnWindow", label: "Return Window", value: refundPolicyDetails.returnWindow,
+        failDesc: "Could not detect how many days customers have to return items.",
+        fix: "Add a clear return window to your refund policy, e.g.: 'You have 30 days from the date of delivery to request a return.'",
+      },
+      {
+        key: "returnShipping", label: "Return Shipping Policy", value: refundPolicyDetails.returnShipping,
+        failDesc: "Could not detect who pays for return shipping (the customer or your store).",
+        fix: "State who is responsible for return shipping costs in your refund policy, e.g.: 'Customers are responsible for return shipping costs' or 'We provide a prepaid return shipping label.'",
+      },
+      {
+        key: "processingTime", label: "Refund Processing Time", value: refundPolicyDetails.processingTime,
+        failDesc: "Could not detect how long it takes to process a refund after receiving the returned item.",
+        fix: "Add refund processing time to your refund policy, e.g.: 'Refunds are processed within 5-10 business days after we receive your return.'",
+      },
+      {
+        key: "exchangesAllowed", label: "Exchanges Policy", value: refundPolicyDetails.exchangesAllowed,
+        failDesc: "Could not detect whether your store allows exchanges.",
+        fix: "State whether exchanges are allowed in your refund policy, e.g.: 'We offer exchanges for items of equal value' or 'We do not offer exchanges — please return and reorder.'",
+      },
+      {
+        key: "restockingFees", label: "Restocking Fees", value: refundPolicyDetails.restockingFees,
+        failDesc: "Could not detect whether your store charges restocking fees on returns.",
+        fix: "State whether restocking fees apply in your refund policy, e.g.: 'No restocking fees apply' or 'A 15% restocking fee may apply to opened items.'",
+      },
+    ];
+    for (const rc of refundChecks) {
       checks.push({
         id: `refund_${rc.key}`, category: "Refund Policy", name: rc.label,
         status: rc.value ? "pass" : "fail",
-        description: rc.value ? `Detected: ${rc.value}` : `Could not detect ${rc.label.toLowerCase()} in your refund policy.`,
-        fix: !rc.value ? `Add clear ${rc.label.toLowerCase()} info to /policies/refund-policy.` : undefined,
+        description: rc.value ? `Detected: ${rc.value}` : rc.failDesc,
+        fix: !rc.value ? rc.fix : undefined,
       });
     }
   } else {
