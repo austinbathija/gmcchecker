@@ -953,6 +953,18 @@ export async function scanStore(inputUrl: string): Promise<ScanResult> {
     fix: !hoursRegex.test(footerText) ? "Add your Customer Service Hours to the footer (e.g., Mon-Fri 9am-5pm EST)." : undefined,
   });
 
+  const contactWindowRegex = /(?:get\s+back\s+to\s+you|(?:we(?:'ll|\s+will)\s+)?(?:reply|respond|email\s+(?:you\s+)?back|contact\s+you|reach\s+out)|(?:you(?:'ll|\s+will)\s+)?hear\s+(?:back\s+)?from\s+us|response?\s+(?:time|within)|expect\s+a?\s*(?:response|reply)\s+(?:in|within)|allow\s+up\s+to|aim\s+to\s+(?:reply|respond|get\s+back)|(?:within|in)\s+\d+\s*(?:hour|hr|day|minute|min|business\s+day))\s*.*?\d+\s*(?:hour|hr|day|minute|min|business\s+day)/i;
+  checks.push({
+    id: "footer_contact_window", category: "Footer Requirements", name: "Contact Response Window in Footer",
+    status: contactWindowRegex.test(footerText) ? "pass" : "fail",
+    description: contactWindowRegex.test(footerText)
+      ? "A contact response window was found in the footer."
+      : "No contact response window found in the footer.",
+    fix: !contactWindowRegex.test(footerText)
+      ? 'Add a response time commitment to your footer (e.g., "We will get back to you within 24 hours").'
+      : undefined,
+  });
+
   // ────────────────────────────────────────────────────────────────────────
   // 11b. Contact Page Content Checks
   // ────────────────────────────────────────────────────────────────────────
