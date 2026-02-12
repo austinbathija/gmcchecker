@@ -45,13 +45,7 @@ function StatusIcon({ status }: { status: ScanCheck["status"] }) {
       </div>
     );
   }
-  return (
-    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-100">
-      <svg className="h-4 w-4 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-      </svg>
-    </div>
-  );
+  return null;
 }
 
 function ScoreRing({ score }: { score: number }) {
@@ -252,7 +246,7 @@ function PolicyExtractedData({ title, items }: { title: string; items: { label: 
 export default function ResultsPage() {
   const router = useRouter();
   const [result, setResult] = useState<ScanResult | null>(null);
-  const [filter, setFilter] = useState<"all" | "fail" | "warning" | "pass">("all");
+  const [filter, setFilter] = useState<"all" | "fail" | "pass">("all");
 
   useEffect(() => {
     const stored = sessionStorage.getItem("gmc_scan_result");
@@ -348,10 +342,6 @@ export default function ResultsPage() {
                   <span className="h-3 w-3 rounded-full bg-danger" />
                   <span className="text-muted">{result.summary.failed} failed</span>
                 </div>
-                <div className="flex items-center gap-1.5 text-sm">
-                  <span className="h-3 w-3 rounded-full bg-warning" />
-                  <span className="text-muted">{result.summary.warnings} warnings</span>
-                </div>
               </div>
             </div>
             <div className="flex flex-col gap-2">
@@ -371,7 +361,7 @@ export default function ResultsPage() {
 
           {/* Filter tabs */}
           <div className="mt-8 flex gap-2">
-            {(["all", "fail", "warning", "pass"] as const).map((f) => (
+            {(["all", "fail", "pass"] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -381,7 +371,7 @@ export default function ResultsPage() {
                     : "bg-white text-muted border border-border hover:bg-card"
                 }`}
               >
-                {f === "all" ? "All" : f === "fail" ? "Failed" : f === "warning" ? "Warnings" : "Passed"}
+                {f === "all" ? "All" : f === "fail" ? "Failed" : "Passed"}
                 <span className="ml-1.5 text-xs opacity-70">
                   ({f === "all" ? result.checks.length : result.checks.filter((c) => c.status === f).length})
                 </span>
