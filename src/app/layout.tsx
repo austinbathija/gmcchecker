@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GMC Scout - Fix Google Merchant Center Rejections Fast",
+  title: "Blue Ocean Program - GMC Checker",
   description:
     "Scan your Shopify store for Google Merchant Center compliance issues. Get instant reports and fix rejections fast.",
 };

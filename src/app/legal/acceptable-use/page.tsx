@@ -24,7 +24,7 @@ export default function AcceptableUsePolicyPage() {
             </h2>
             <p className="mt-2">
               This Acceptable Use Policy outlines the permitted and prohibited
-              uses of GMC Scout. By using the Service, you agree to comply with
+              uses of Blue Ocean Program - GMC Checker. By using the Service, you agree to comply with
               this policy.
             </p>
           </section>
@@ -33,7 +33,7 @@ export default function AcceptableUsePolicyPage() {
             <h2 className="text-lg font-semibold text-foreground">
               2. Permitted Use
             </h2>
-            <p className="mt-2">You may use GMC Scout to:</p>
+            <p className="mt-2">You may use Blue Ocean Program - GMC Checker to:</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>
                 Scan Shopify stores that you own or have explicit authorization
@@ -54,7 +54,7 @@ export default function AcceptableUsePolicyPage() {
             <h2 className="text-lg font-semibold text-foreground">
               3. Prohibited Use
             </h2>
-            <p className="mt-2">You may not use GMC Scout to:</p>
+            <p className="mt-2">You may not use Blue Ocean Program - GMC Checker to:</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>
                 Scan stores belonging to others without their explicit consent

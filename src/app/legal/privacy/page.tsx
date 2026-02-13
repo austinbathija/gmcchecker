@@ -21,7 +21,7 @@ export default function PrivacyPolicyPage() {
               1. Information We Collect
             </h2>
             <p className="mt-2">
-              When you use GMC Scout, we may collect the following information:
+              When you use Blue Ocean Program - GMC Checker, we may collect the following information:
             </p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>

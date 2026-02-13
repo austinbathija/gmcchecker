@@ -23,7 +23,7 @@ export default function TermsOfServicePage() {
               1. Acceptance of Terms
             </h2>
             <p className="mt-2">
-              By accessing and using GMC Scout (&quot;the Service&quot;), you agree to
+              By accessing and using Blue Ocean Program - GMC Checker (&quot;the Service&quot;), you agree to
               be bound by these Terms of Service. If you do not agree with any
               part of these terms, you may not use the Service.
             </p>
@@ -34,7 +34,7 @@ export default function TermsOfServicePage() {
               2. Description of Service
             </h2>
             <p className="mt-2">
-              GMC Scout is a compliance scanning tool that analyzes Shopify
+              Blue Ocean Program - GMC Checker is a compliance scanning tool that analyzes Shopify
               stores for Google Merchant Center policy compliance. The Service
               provides automated reports identifying potential issues that may
               affect your Google Merchant Center approval status.
@@ -73,7 +73,7 @@ export default function TermsOfServicePage() {
             </h2>
             <p className="mt-2">
               The Service is provided &quot;as is&quot; and &quot;as available&quot; without
-              warranties of any kind, either express or implied. GMC Scout does
+              warranties of any kind, either express or implied. Blue Ocean Program - GMC Checker does
               not guarantee that scan results are complete, accurate, or
               up-to-date. Compliance with Google Merchant Center policies is
               ultimately determined by Google, and our scan results are advisory
@@ -86,7 +86,7 @@ export default function TermsOfServicePage() {
               6. Limitation of Liability
             </h2>
             <p className="mt-2">
-              In no event shall GMC Scout, its operators, or affiliates be
+              In no event shall Blue Ocean Program - GMC Checker, its operators, or affiliates be
               liable for any indirect, incidental, special, consequential, or
               punitive damages arising out of or related to your use of the
               Service. This includes, without limitation, lost profits, lost
@@ -102,7 +102,7 @@ export default function TermsOfServicePage() {
             <p className="mt-2">
               All content, features, and functionality of the Service,
               including but not limited to scanning algorithms, reports, and
-              user interface design, are owned by GMC Scout and are protected
+              user interface design, are owned by Blue Ocean Program - GMC Checker and are protected
               by intellectual property laws.
             </p>
           </section>
