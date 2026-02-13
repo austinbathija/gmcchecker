@@ -6,6 +6,7 @@ import {
   recordScan,
   buildClearCookie,
 } from "@/lib/auth";
+import { logScan } from "@/lib/db";
 
 export const maxDuration = 60;
 
@@ -56,6 +57,9 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await scanStore(cleaned);
+
+    // Log to database (fire-and-forget)
+    logScan(result).catch(() => {});
 
     // Include scan usage info in the response
     return NextResponse.json({
