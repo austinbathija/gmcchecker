@@ -6,10 +6,10 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days in seconds
 const MAX_SCANS = 3;
 
 // --- Password verification ---
+const ACCESS_PASSWORD = "BlueOcean";
+
 export function verifyPassword(inputPassword: string): boolean {
-  const storedPassword = process.env.ACCESS_PASSWORD;
-  if (!storedPassword) return false;
-  return inputPassword === storedPassword;
+  return inputPassword === ACCESS_PASSWORD;
 }
 
 // --- Session tokens (HMAC-signed) ---
