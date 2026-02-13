@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import WelcomeModal from "@/components/WelcomeModal";
 
 export default function ScanPage() {
   const router = useRouter();
@@ -51,6 +52,7 @@ export default function ScanPage() {
 
   return (
     <div className="min-h-screen flex flex-col">
+      <WelcomeModal />
       <Navbar />
 
       <main className="flex-1 bg-gradient-to-br from-indigo-50 via-white to-cyan-50">
