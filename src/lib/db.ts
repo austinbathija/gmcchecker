@@ -1,30 +1,41 @@
 import { neon } from "@neondatabase/serverless";
 import type { ScanResult } from "./scanner";
 
+let cachedSql: ReturnType<typeof neon> | null = null;
+
 function getClient() {
-  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
-  if (!url) throw new Error("DATABASE_URL or POSTGRES_URL env var is required");
-  return neon(url);
+  if (cachedSql) return cachedSql;
+  const url =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    process.env.POSTGRES_URL_UNPOOLED;
+  if (!url) throw new Error("No Postgres connection string found in env vars");
+  cachedSql = neon(url);
+  return cachedSql;
 }
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 
 async function initDb() {
-  if (initialized) return;
-  const sql = getClient();
-  await sql`
-    CREATE TABLE IF NOT EXISTS scans (
-      id SERIAL PRIMARY KEY,
-      domain TEXT NOT NULL,
-      score INTEGER NOT NULL,
-      passed INTEGER NOT NULL,
-      failed INTEGER NOT NULL,
-      warnings INTEGER NOT NULL,
-      checks JSONB NOT NULL,
-      scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `;
-  initialized = true;
+  if (!initPromise) {
+    initPromise = (async () => {
+      const sql = getClient();
+      await sql`
+        CREATE TABLE IF NOT EXISTS scans (
+          id SERIAL PRIMARY KEY,
+          domain TEXT NOT NULL,
+          score INTEGER NOT NULL,
+          passed INTEGER NOT NULL,
+          failed INTEGER NOT NULL,
+          warnings INTEGER NOT NULL,
+          checks JSONB NOT NULL,
+          scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+    })();
+  }
+  return initPromise;
 }
 
 export async function logScan(result: ScanResult) {

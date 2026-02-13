@@ -58,8 +58,12 @@ export async function POST(req: NextRequest) {
 
     const result = await scanStore(cleaned);
 
-    // Log to database (fire-and-forget)
-    logScan(result).catch(() => {});
+    // Log to database (awaited so the serverless function stays alive)
+    try {
+      await logScan(result);
+    } catch (err) {
+      console.error("[DB] Failed to log scan:", err);
+    }
 
     // Include scan usage info in the response
     return NextResponse.json({
